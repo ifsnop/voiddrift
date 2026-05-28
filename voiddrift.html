@@ -36,56 +36,72 @@
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js"></script>
 <script>
 // ================================================================
-// CONSTANTS - edita aqui para rebalancear el juego
+// CONSTANTS
 // ================================================================
 const TYPE = { ENEMY:"enemy", PLAYER:"player", WALL:"wall", BULLET:"bullet" };
 
 // --- FASES ---
 const PHASE_DURATION_MS     = 30000;  // duración de cada fase (ms)
-const TOTAL_PHASES          = 4;      // número total de fases
+const TOTAL_PHASES          = 5;
 
-// Enemigos iniciales por fase { variant: cantidad }
-const PHASE_INITIAL_ENEMIES = {
+// Enemigos que se AÑADEN al inicio de cada fase (los anteriores permanecen)
+const PHASE_ADD_ENEMIES = {
   1: { enemy_heavy: 5 },
   2: { enemy_heavy: 5, enemy_boss: 1 },
   3: { enemy_heavy: 5, enemy_boss: 1, enemy_spawner: 1 },
-  4: { enemy_spawner: 2, enemy_follower: 1 },
+  4: { enemy_spawner: 2, enemy_follower: 5 },
+  5: { enemy_hitter: 4 },
 };
 
 // --- SPAWNER ---
-const SPAWNER_SPAWN_INTERVAL_MS = 20000;       // ms entre spawns del spawner
-const SPAWNER_SPAWN_VARIANT     = "enemy_heavy"; // tipo de enemigo que produce
-const SPAWNER_DEATH_RELEASE     = 3;            // heavies que suelta al morir
+const SPAWNER_SPAWN_INTERVAL_MS = 20000;
+const SPAWNER_SPAWN_VARIANT     = "enemy_heavy";
+const SPAWNER_DEATH_RELEASE     = 3;
+// Efecto visual del spawner al spawnear
+const SPAWNER_PULSE_RADIUS      = 90;   // radio de la onda expansiva (px)
+const SPAWNER_PULSE_DURATION    = 500;  // ms que dura la onda
 
 // --- FOLLOWER ---
-const FOLLOWER_IMPULSE_INTERVAL_MS = 5000;  // ms entre impulsos hacia el player
-const FOLLOWER_IMPULSE_FORCE       = 6;     // intensidad del impulso
+const FOLLOWER_IMPULSE_INTERVAL_MS = 5000;
+// Al impulso: frenamos la vel anterior y lanzamos directo al player
+const FOLLOWER_BRAKE_FACTOR        = 0.1;  // cuánto se conserva la vel previa (0=frena del todo)
+const FOLLOWER_IMPULSE_SPEED       = 9;    // velocidad resultante hacia el player
+
+// --- HITTER ---
+const HITTER_SHOOT_INTERVAL_MS  = 2500;   // ms entre disparos del hitter
+const HITTER_BULLET_SPEED       = 5;      // velocidad del proyectil enemigo
+const HITTER_BULLET_DAMAGE      = 2;      // daño al jugador por impacto
 
 // --- ENERGÍA ---
 const ENERGY = {
   enemy_basic:1, enemy_heavy:5, enemy_boss:15,
-  enemy_spawner:8, enemy_follower:12,
+  enemy_spawner:12, enemy_follower:8, enemy_hitter:7,
   player:10, wall:Infinity
 };
 
 // --- DAÑO de enemigos al contacto ---
 const ENEMY_DAMAGE = {
   enemy_basic:1, enemy_heavy:2, enemy_boss:5,
-  enemy_spawner:1, enemy_follower:3
+  enemy_spawner:1, enemy_follower:3, enemy_hitter:2
 };
 
-// --- SHIELD ---
+// --- SHIELD (recarga más lenta) ---
 const SHIELD_MAX_MS    = 3000;
-const SHIELD_COOLDOWN  = 10000;
+const SHIELD_COOLDOWN  = 20000;  // recarga lenta
 const SHIELD_RADIUS    = 36;
 const SHIELD_DAMAGE    = 3;
 const SHIELD_HIT_CD    = 600;
 
-// --- BALAS ---
+// --- BALAS del jugador ---
 const BULLET_DAMAGE = { normal:1, heavy:3, laser:6 };
 const BULLET_SPEED  = { normal:10, heavy:7, laser:18 };
 const BULLET_MASS   = { normal:0.3, heavy:1.5, laser:0.05 };
 const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4 };
+
+// --- BALAS enemigas ---
+const ENEMY_BULLET_COLOR  = 0xff3333;
+const ENEMY_BULLET_SIZE   = 7;
+const ENEMY_BULLET_MASS   = 0.3;
 
 // --- FÍSICA ---
 const RESTITUTION   = 0.75;
@@ -102,11 +118,12 @@ const HIT_CD_MS      = 1200;
 
 // --- TAMAÑOS y COLORES de enemigos ---
 const ENEMY_SIZE = {
-  enemy_basic:   [10, 10],
-  enemy_heavy:   [18, 18],
-  enemy_boss:    [30, 30],
-  enemy_spawner: [22, 22],
-  enemy_follower:[16, 16],
+  enemy_basic:   [12, 12],
+  enemy_heavy:   [22, 22],
+  enemy_boss:    [36, 36],
+  enemy_spawner: [38, 38],   // grande y amenazante
+  enemy_follower:[20, 20],
+  enemy_hitter:  [22, 22],
 };
 const ENEMY_COLOR = {
   enemy_basic:   0x4488ff,
@@ -114,6 +131,7 @@ const ENEMY_COLOR = {
   enemy_boss:    0xff2222,
   enemy_spawner: 0xaa44ff,
   enemy_follower:0x44ff88,
+  enemy_hitter:  0xff4466,
 };
 const COLOR = {
   player:0x00ffcc, wall:0x5577aa,
@@ -121,11 +139,11 @@ const COLOR = {
 };
 
 // --- PARTÍCULAS ---
-const FRAG_DURATION    = 350;
-const FRAG_COUNT       = 6;
-const EXHAUST_DURATION = 280;
-const EXHAUST_RATE_MS  = 30;
-const ENERGY_BAR_DURATION    = 3000;
+const FRAG_DURATION       = 350;
+const FRAG_COUNT          = 6;
+const EXHAUST_DURATION    = 280;
+const EXHAUST_RATE_MS     = 30;
+const ENERGY_BAR_DURATION = 3000;
 const PLAYER_HP_BAR_DURATION = 3000;
 
 // ================================================================
@@ -158,6 +176,8 @@ function makeEntity(type, variant, x, y, w, h, vx, vy, mass, color) {
     lastHit: 0, color, gfx: null,
     lastSpawn: 0,    // spawner
     lastImpulse: 0,  // follower
+    lastShot: 0,     // hitter
+    isEnemyBullet: false,
   };
 }
 
@@ -165,25 +185,55 @@ function makeEntity(type, variant, x, y, w, h, vx, vy, mass, color) {
 // POOL
 // ================================================================
 const pool = [];
-function addToPool(e) {
+function buildEnemyGfx(e) {
   const g = new PIXI.Graphics();
   g.beginFill(e.color);
   if (e.variant === 'enemy_spawner') {
+    // Hexágono grande con núcleo brillante
     const hw = e.halfW, hh = e.halfH;
     g.drawPolygon([hw,0, e.w,hh*0.5, e.w,hh*1.5, hw,e.h, 0,hh*1.5, 0,hh*0.5]);
+    g.endFill();
+    // Núcleo central más claro
+    g.beginFill(0xdd88ff, 0.8);
+    g.drawCircle(hw, hh, hw * 0.45);
+    g.endFill();
+    // Anillo exterior
+    g.lineStyle(3, 0xee66ff, 1);
+    g.drawCircle(hw, hh, hw - 2);
   } else if (e.variant === 'enemy_follower') {
+    // Rombo con trazo interior
     const hw = e.halfW, hh = e.halfH;
     g.drawPolygon([hw,0, e.w,hh, hw,e.h, 0,hh]);
+    g.endFill();
+    g.lineStyle(2, 0xaaffcc, 0.9);
+    g.drawPolygon([hw,3, e.w-3,hh, hw,e.h-3, 3,hh]);
+  } else if (e.variant === 'enemy_hitter') {
+    // Cruz / mira
+    const hw = e.halfW, hh = e.halfH;
+    g.drawRect(0, 0, e.w, e.h);
+    g.endFill();
+    g.beginFill(0xffaaaa, 0.9);
+    g.drawRect(hw-2, 2, 4, e.h-4);
+    g.drawRect(2, hh-2, e.w-4, 4);
+    g.endFill();
+    g.lineStyle(2, 0xff0000, 0.8);
+    g.drawCircle(hw, hh, hw - 2);
   } else {
     g.drawRect(0, 0, e.w, e.h);
+    g.endFill();
   }
-  g.endFill();
-  if (e.variant === 'enemy_spawner') {
-    g.lineStyle(2, 0xdd88ff, 1);
-    g.drawCircle(e.halfW, e.halfH, e.halfW - 1);
-  } else if (e.variant === 'enemy_follower') {
-    g.lineStyle(2, 0x88ffbb, 1);
-    g.drawCircle(e.halfW, e.halfH, e.halfW - 1);
+  return g;
+}
+
+function addToPool(e) {
+  let g;
+  if (e.type === TYPE.ENEMY) {
+    g = buildEnemyGfx(e);
+  } else {
+    g = new PIXI.Graphics();
+    g.beginFill(e.color);
+    g.drawRect(0, 0, e.w, e.h);
+    g.endFill();
   }
   g.pivot.x = e.halfW; g.pivot.y = e.halfH;
   g.x = e.x; g.y = e.y;
@@ -217,8 +267,8 @@ function spawnEnemy(variant, x, y) {
   if (!variant) variant = 'enemy_basic';
   const [ew, eh] = ENEMY_SIZE[variant] ?? [12, 12];
   const col = ENEMY_COLOR[variant] ?? 0x888888;
-  const sx = (x !== undefined) ? x : (20 + Math.random() * (W() * 0.28));
-  const sy = (y !== undefined) ? y : (20 + Math.random() * (H() - 40));
+  const sx = (x !== undefined) ? x : (20 + Math.random() * (W() * 0.35));
+  const sy = (y !== undefined) ? y : (30 + Math.random() * (H() - 60));
   return addToPool(makeEntity(
     TYPE.ENEMY, variant, sx, sy, ew, eh,
     (Math.random() - 0.3) * 4,
@@ -231,11 +281,80 @@ function spawnPlayer() {
   return addToPool(makeEntity(TYPE.PLAYER,"player",W()*0.75,H()*0.5,20,20,0,0,2,COLOR.player));
 }
 
-function spawnBullet(x, y, vx, vy, btype) {
-  const col  = COLOR["bullet_" + btype] ?? 0xffff00;
-  const mass = BULLET_MASS[btype] ?? 0.3;
-  const bs   = BULLET_SIZE[btype] ?? 6;
-  return addToPool(makeEntity(TYPE.BULLET,"bullet_"+btype,x,y,bs,bs,vx,vy,mass,col));
+function spawnBullet(x, y, vx, vy, btype, isEnemyBullet) {
+  let col, mass, bs;
+  if (isEnemyBullet) {
+    col = ENEMY_BULLET_COLOR; mass = ENEMY_BULLET_MASS; bs = ENEMY_BULLET_SIZE;
+    btype = "enemy";
+  } else {
+    col  = COLOR["bullet_" + btype] ?? 0xffff00;
+    mass = BULLET_MASS[btype] ?? 0.3;
+    bs   = BULLET_SIZE[btype] ?? 6;
+  }
+  const e = makeEntity(TYPE.BULLET,"bullet_"+btype,x,y,bs,bs,vx,vy,mass,col);
+  e.isEnemyBullet = !!isEnemyBullet;
+  return addToPool(e);
+}
+
+// ================================================================
+// EFECTOS VISUALES ESPECIALES
+// ================================================================
+// Ondas expansivas del spawner
+const pulses = [];  // { gfx, x, y, life, maxLife, maxR }
+
+function spawnSpawnerPulse(x, y) {
+  const g = new PIXI.Graphics();
+  app.stage.addChild(g);
+  pulses.push({ gfx:g, x, y, life: SPAWNER_PULSE_DURATION, maxLife: SPAWNER_PULSE_DURATION, maxR: SPAWNER_PULSE_RADIUS });
+}
+
+function updatePulses(dt) {
+  for (let i = pulses.length - 1; i >= 0; i--) {
+    const p = pulses[i];
+    p.life -= app.ticker.deltaMS;
+    if (p.life <= 0) {
+      app.stage.removeChild(p.gfx); p.gfx.destroy();
+      pulses.splice(i, 1); continue;
+    }
+    const t = 1 - p.life / p.maxLife;  // 0→1
+    const r = p.maxR * t;
+    const alpha = (1 - t) * 0.7;
+    p.gfx.clear();
+    p.gfx.lineStyle(3, 0xdd44ff, alpha);
+    p.gfx.drawCircle(p.x, p.y, r);
+    // Segunda onda más pequeña desfasada
+    const r2 = p.maxR * Math.max(0, t - 0.25);
+    if (r2 > 0) {
+      p.gfx.lineStyle(1.5, 0xff88ff, alpha * 0.5);
+      p.gfx.drawCircle(p.x, p.y, r2);
+    }
+  }
+}
+
+// Flash de impulso del follower
+const impulseFlashes = [];  // { gfx, x, y, life, maxLife }
+function spawnImpulseFlash(x, y) {
+  const g = new PIXI.Graphics();
+  app.stage.addChild(g);
+  impulseFlashes.push({ gfx:g, x, y, life:300, maxLife:300 });
+}
+function updateImpulseFlashes() {
+  for (let i = impulseFlashes.length-1; i >= 0; i--) {
+    const f = impulseFlashes[i];
+    f.life -= app.ticker.deltaMS;
+    if (f.life <= 0) {
+      app.stage.removeChild(f.gfx); f.gfx.destroy();
+      impulseFlashes.splice(i, 1); continue;
+    }
+    const t = f.life / f.maxLife;
+    const r = 28 * (1 - t);
+    f.gfx.clear();
+    f.gfx.lineStyle(2 + t * 3, 0x44ffaa, t);
+    f.gfx.drawCircle(f.x, f.y, r);
+    f.gfx.beginFill(0x44ffaa, t * 0.25);
+    f.gfx.drawCircle(f.x, f.y, r);
+    f.gfx.endFill();
+  }
 }
 
 // ================================================================
@@ -255,17 +374,12 @@ function timerColor(secsLeft) {
 }
 
 function startPhase(n, now) {
-  currentPhase  = n;
+  currentPhase   = n;
   phaseStartTime = now;
-  phaseActive   = true;
+  phaseActive    = true;
 
-  // Limpiar enemigos de la fase anterior
-  for (let i = 0; i < pool.length; i++) {
-    if (pool[i].type === TYPE.ENEMY) pool[i].alive = false;
-  }
-
-  // Spawnear configuración de la nueva fase
-  const config = PHASE_INITIAL_ENEMIES[n] ?? {};
+  // Añadir enemigos de esta fase SIN eliminar los anteriores
+  const config = PHASE_ADD_ENEMIES[n] ?? {};
   for (const [variant, count] of Object.entries(config)) {
     for (let i = 0; i < count; i++) spawnEnemy(variant);
   }
@@ -287,9 +401,9 @@ function phaseUpdate(now) {
       startPhase(currentPhase + 1, now);
     } else {
       phaseActive = false;
-      elPhaseTimer.textContent  = "FIN";
-      elPhaseTimer.style.color  = "#ffcc00";
-      elPhaseLabel.textContent  = "¡COMPLETADO!";
+      elPhaseTimer.textContent = "FIN";
+      elPhaseTimer.style.color = "#ffcc00";
+      elPhaseLabel.textContent = "¡COMPLETADO!";
     }
   }
 }
@@ -304,41 +418,92 @@ function enemyAI(now) {
     const e = pool[i];
     if (!e.alive || e.type !== TYPE.ENEMY) continue;
 
-    // SPAWNER: genera un heavy periódicamente
+    // ---- SPAWNER ----
     if (e.variant === 'enemy_spawner') {
       if (now - e.lastSpawn >= SPAWNER_SPAWN_INTERVAL_MS) {
         e.lastSpawn = now;
+        // Onda expansiva visual
+        spawnSpawnerPulse(e.x, e.y);
+        // Segundo pulso ligeramente retrasado
+        setTimeout(() => spawnSpawnerPulse(e.x, e.y), 120);
+        // Parpadeo del spawner
+        if (e.gfx) {
+          e.gfx.tint = 0xffffff;
+          setTimeout(() => { if (e.gfx) e.gfx.tint = 0xffffff; }, 200);
+        }
+        // Spawn del enemigo
         const angle = Math.random() * Math.PI * 2;
-        const dist  = 30 + Math.random() * 20;
-        const sx = Math.max(20, Math.min(W()-20, e.x + Math.cos(angle) * dist));
-        const sy = Math.max(20, Math.min(H()-20, e.y + Math.sin(angle) * dist));
+        const dist  = 40 + Math.random() * 25;
+        const sx = Math.max(30, Math.min(W()-30, e.x + Math.cos(angle) * dist));
+        const sy = Math.max(30, Math.min(H()-30, e.y + Math.sin(angle) * dist));
         spawnEnemy(SPAWNER_SPAWN_VARIANT, sx, sy);
       }
-      // Deriva lenta si se queda quieto
-      if (Math.abs(e.vx) < 0.5 && Math.abs(e.vy) < 0.5) {
-        e.vx = (Math.random() - 0.5) * 1.5;
-        e.vy = (Math.random() - 0.5) * 1.5;
+      // Pulso de scale para indicar vida
+      if (e.gfx) {
+        const sc = 1 + 0.06 * Math.sin(now / 400 + e.id);
+        e.gfx.scale.set(sc);
+      }
+      // Deriva si se queda quieto
+      if (Math.abs(e.vx) < 0.4 && Math.abs(e.vy) < 0.4) {
+        e.vx = (Math.random() - 0.5) * 1.8;
+        e.vy = (Math.random() - 0.5) * 1.8;
         e.sleeping = false; e.sleepN = 0;
       }
     }
 
-    // FOLLOWER: impulso periódico hacia el player
+    // ---- FOLLOWER ----
     if (e.variant === 'enemy_follower') {
       if (now - e.lastImpulse >= FOLLOWER_IMPULSE_INTERVAL_MS) {
         e.lastImpulse = now;
-        const dx = player.x - e.x, dy = player.y - e.y;
+
+        // Dirección exacta hacia el player en este instante
+        const dx = player.x - e.x;
+        const dy = player.y - e.y;
         const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-        e.vx += (dx / dist) * FOLLOWER_IMPULSE_FORCE;
-        e.vy += (dy / dist) * FOLLOWER_IMPULSE_FORCE;
+        const nx = dx / dist, ny = dy / dist;
+
+        // Frenar velocidad previa casi por completo, luego lanzar hacia el player
+        e.vx = e.vx * FOLLOWER_BRAKE_FACTOR + nx * FOLLOWER_IMPULSE_SPEED;
+        e.vy = e.vy * FOLLOWER_BRAKE_FACTOR + ny * FOLLOWER_IMPULSE_SPEED;
         e.sleeping = false; e.sleepN = 0;
-        // Flash blanco breve al impulso
-        if (e.gfx) {
-          e.gfx.tint = 0xffffff;
-          setTimeout(() => { if (e.gfx) e.gfx.tint = 0xffffff; }, 120);
-        }
+
+        // Flash visual de impulso
+        spawnImpulseFlash(e.x, e.y);
+        if (e.gfx) { e.gfx.tint = 0xffffff; setTimeout(()=>{ if(e.gfx) e.gfx.tint = 0xffffff; }, 150); }
       }
-      // Pulso de alpha
-      if (e.gfx) e.gfx.alpha = 0.7 + 0.3 * Math.sin(now / 300 + e.id);
+      // Alpha pulsante
+      if (e.gfx) e.gfx.alpha = 0.65 + 0.35 * Math.sin(now / 250 + e.id);
+    }
+
+    // ---- HITTER ----
+    if (e.variant === 'enemy_hitter') {
+      if (now - e.lastShot >= HITTER_SHOOT_INTERVAL_MS) {
+        e.lastShot = now;
+
+        // Vector normalizado hacia la posición ACTUAL del jugador
+        const dx = player.x - e.x;
+        const dy = player.y - e.y;
+        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        const nx = dx / dist, ny = dy / dist;
+
+        // Offset: salir desde el borde del hitter
+        const offset = Math.max(e.halfW, e.halfH) + ENEMY_BULLET_SIZE + 2;
+        spawnBullet(
+          e.x + nx * offset,
+          e.y + ny * offset,
+          nx * HITTER_BULLET_SPEED,
+          ny * HITTER_BULLET_SPEED,
+          null, true  // isEnemyBullet = true
+        );
+        // Retroceso leve del hitter al disparar
+        e.vx -= nx * 1.5 * e.invMass;
+        e.vy -= ny * 1.5 * e.invMass;
+        e.sleeping = false; e.sleepN = 0;
+        // Flash visual
+        if (e.gfx) { e.gfx.tint = 0xffffff; setTimeout(()=>{ if(e.gfx) e.gfx.tint = 0xffffff; },100); }
+      }
+      // Rotación lenta
+      if (e.gfx) e.gfx.rotation = (now / 2000) % (Math.PI * 2);
     }
   }
 }
@@ -426,7 +591,7 @@ function updateExhaust(dt) {
 // ENERGY BARS
 // ================================================================
 const energyBars = new Map();
-const BAR_W = 32, BAR_H = 4, BAR_YOFF = 8;
+const BAR_W = 36, BAR_H = 4, BAR_YOFF = 10;
 
 function showEnergyBar(entity, now) {
   let bar = energyBars.get(entity.id);
@@ -450,11 +615,12 @@ function updateEnergyBars(now) {
     const timeLeft = (bar.expireAt - now) / ENERGY_BAR_DURATION;
     const alpha    = timeLeft < 0.3 ? timeLeft / 0.3 : 1.0;
     const g = bar.gfx; g.clear();
+    const bw = Math.max(BAR_W, e.w);
     g.beginFill(0x222222, 0.7*alpha);
-    g.drawRect(e.x-BAR_W/2, e.y+e.halfH+BAR_YOFF, BAR_W, BAR_H); g.endFill();
+    g.drawRect(e.x-bw/2, e.y+e.halfH+BAR_YOFF, bw, BAR_H); g.endFill();
     const r = Math.round(255*(1-frac)), gv = Math.round(200*frac);
     g.beginFill((r<<16)|(gv<<8), alpha);
-    g.drawRect(e.x-BAR_W/2, e.y+e.halfH+BAR_YOFF, BAR_W*frac, BAR_H); g.endFill();
+    g.drawRect(e.x-bw/2, e.y+e.halfH+BAR_YOFF, bw*frac, BAR_H); g.endFill();
   }
 }
 
@@ -464,7 +630,12 @@ function updateEnergyBars(now) {
 function syncGraphics() {
   for (let i = 0; i < pool.length; i++) {
     const e = pool[i];
-    if (e.gfx) { e.gfx.x = e.x; e.gfx.y = e.y; }
+    if (e.gfx && e.variant !== 'enemy_hitter') {
+      // hitter rota, no sobreescribir rotation
+      e.gfx.x = e.x; e.gfx.y = e.y;
+    } else if (e.gfx) {
+      e.gfx.x = e.x; e.gfx.y = e.y;
+    }
   }
 }
 
@@ -486,7 +657,9 @@ function onEnemyDeath(enemy) {
   } else if (enemy.variant === 'enemy_heavy') {
     for (let i=0;i<2;i++) spawnEnemy('enemy_basic', enemy.x+(Math.random()-.5)*20, enemy.y+(Math.random()-.5)*20);
   } else if (enemy.variant === 'enemy_spawner') {
-    for (let i=0;i<SPAWNER_DEATH_RELEASE;i++) spawnEnemy('enemy_heavy', enemy.x+(Math.random()-.5)*40, enemy.y+(Math.random()-.5)*40);
+    spawnSpawnerPulse(enemy.x, enemy.y);
+    spawnSpawnerPulse(enemy.x, enemy.y);
+    for (let i=0;i<SPAWNER_DEATH_RELEASE;i++) spawnEnemy('enemy_heavy', enemy.x+(Math.random()-.5)*50, enemy.y+(Math.random()-.5)*50);
   }
 }
 
@@ -495,6 +668,27 @@ function onCollision(a, b, ox, oy, now) {
     const bullet = a.type===TYPE.BULLET ? a : b;
     const other  = a.type===TYPE.BULLET ? b : a;
     if (!bullet.alive) return;
+
+    // Bala enemiga solo daña al player (no a otros enemigos)
+    if (bullet.isEnemyBullet) {
+      if (other.type === TYPE.WALL)   { bullet.alive = false; return; }
+      if (other.type === TYPE.PLAYER) {
+        if (now - other.lastHit > HIT_CD_MS) {
+          other.lastHit = now;
+          other.energy -= HITTER_BULLET_DAMAGE;
+          if (other.energy <= 0) other.alive = false;
+          playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
+          shieldBarExpiry   = now + PLAYER_HP_BAR_DURATION;
+        }
+        spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, 0xff4444);
+        applyBulletImpulse(bullet, other);
+        bullet.alive = false;
+      }
+      if (other.type === TYPE.ENEMY)  { bullet.alive = false; }  // atraviesa compañeros
+      return;
+    }
+
+    // Bala del jugador
     if (other.type === TYPE.WALL) { bullet.alive = false; return; }
     if (other.type === TYPE.ENEMY) {
       const btype = bullet.variant.replace("bullet_","");
@@ -507,6 +701,8 @@ function onCollision(a, b, ox, oy, now) {
     }
     bullet.alive = false; return;
   }
+
+  // Contacto enemigo-jugador
   if ((a.type===TYPE.ENEMY && b.type===TYPE.PLAYER) ||
       (a.type===TYPE.PLAYER && b.type===TYPE.ENEMY)) {
     const pl    = a.type===TYPE.PLAYER ? a : b;
@@ -572,7 +768,7 @@ function physicsStep(dt, now) {
     }
     if (e.x-e.halfW<0)   { e.x=e.halfW;      e.vx= Math.abs(e.vx); }
     if (e.x+e.halfW>sw)  { e.x=sw-e.halfW;   e.vx=-Math.abs(e.vx); }
-    if (e.y-e.halfH<0)   { e.y=e.halfH;      e.vy= Math.abs(e.vy); }
+    if (e.y-e.halfH<0)   { e.y=e.halfH;       e.vy= Math.abs(e.vy); }
     if (e.y+e.halfH>sh)  { e.y=sh-e.halfH;   e.vy=-Math.abs(e.vy); }
     const v2 = e.vx*e.vx + e.vy*e.vy;
     if (v2 < SLEEP_THRESH) { if (++e.sleepN > SLEEP_FRAMES) { e.vx=e.vy=0; e.sleeping=true; } }
@@ -594,8 +790,7 @@ function physicsStep(dt, now) {
         const lastSH = shieldHitMap.get(e.id) ?? 0;
         if (now-lastSH > SHIELD_HIT_CD) {
           shieldHitMap.set(e.id, now);
-          e.energy -= SHIELD_DAMAGE;
-          showEnergyBar(e, now);
+          e.energy -= SHIELD_DAMAGE; showEnergyBar(e, now);
           if (e.energy<=0) { e.alive=false; onEnemyDeath(e); }
         }
       }
@@ -623,6 +818,7 @@ function physicsStep(dt, now) {
 const keys  = {};
 const mouse = { x:0, y:0, down:false };
 let player = null, lastShot = 0, currentWeapon = "normal";
+let gameOver=false, paused=false;
 
 window.addEventListener("keydown", e => {
   if (e.code==="KeyP") { paused=!paused; elInfo.textContent=paused?"[PAUSA] - press P to continue":""; return; }
@@ -672,14 +868,13 @@ function inputUpdate(now) {
     const nx=dx/len, ny=dy/len;
     const spd=BULLET_SPEED[currentWeapon]??BULLET_SPEED.normal;
     const offset=Math.max(player.halfW,player.halfH)+4;
-    spawnBullet(player.x+nx*offset, player.y+ny*offset, nx*spd, ny*spd, currentWeapon);
+    spawnBullet(player.x+nx*offset, player.y+ny*offset, nx*spd, ny*spd, currentWeapon, false);
   }
 }
 
 // ================================================================
 // HUD
 // ================================================================
-let gameOver=false, paused=false;
 const elFPS=document.getElementById("hFPS"), elInfo=document.getElementById("hInfo");
 let hudMs=0;
 
@@ -802,6 +997,8 @@ app.ticker.add(() => {
     syncGraphics();
     updateEnergyBars(now);
     updateFragments(dt);
+    updatePulses(dt);
+    updateImpulseFlashes();
     spawnExhaust(now);
     updateExhaust(dt);
     drawShield(now);
