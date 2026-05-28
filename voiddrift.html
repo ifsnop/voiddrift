@@ -589,10 +589,7 @@ function hudUpdate(now) {
     const wNames = { normal: "1-Basic", heavy: "2-Heavy", laser: "3-Laser" };
     const wColors = { normal: "#ffff33", heavy: "#ff8833", laser: "#33ffff" };
     const cdLeft = shieldCooldownUntil > now ? ((shieldCooldownUntil - now) / 1000).toFixed(1) : null;
-    const shieldInfo = shieldActive      ? ' <span style="color:#88ffff">[SHIELD ACTIVE]</span>'
-                     : shieldUsedMs === 0 ? ' <span style="color:#88ffff">[SPACE: shield]</span>'
-                     : cdLeft             ? ' <span style="color:#999">shield recharge: ' + cdLeft + 's</span>'
-                     :                     ' <span style="color:#88ffff">[shield ready]</span>';
+    const shieldInfo = shieldActive ? ' <span style="color:#88ffff">[SHIELD ACTIVE]</span>' : shieldUsedMs === 0 ? ' <span style="color:#88ffff">[SPACE: shield]</span>' : cdLeft ? ' <span style="color:#999">shield recharge: ' + cdLeft + 's</span>' : ' <span style="color:#88ffff">[shield ready]</span>';
     elInfo.innerHTML = "score: " + score +
       '  weapon: <span style="color:' + wColors[currentWeapon] + '">' + wNames[currentWeapon] + '</span>' +
       shieldInfo +
