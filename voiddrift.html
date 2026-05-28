@@ -27,7 +27,8 @@ const TYPE = { ENEMY:"enemy", PLAYER:"player", WALL:"wall", BULLET:"bullet" };
 const ENERGY        = { enemy_basic:2, enemy_heavy:5, enemy_boss:15, player:10, wall:Infinity };
 const BULLET_DAMAGE = { normal:1, heavy:3, laser:6 };
 const BULLET_SPEED  = { normal:10, heavy:7, laser:18 };
-const BULLET_MASS   = { normal:1.2, heavy:3.5, laser:0.4 };   // masa del proyectil (afecta al impulso físico)
+const BULLET_MASS   = { normal:0.3, heavy:1.5, laser:0.05 };
+const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4   };  // tamaño (px) del sprite del proyectil   // masa del proyectil (afecta al impulso físico)
 const RESTITUTION   = 0.75;
 const FRICTION      = 0.08;
 const SLEEP_THRESH  = 0.003;  // vÂ² mÃ­nimo para estar despierto
@@ -39,23 +40,14 @@ const BULLET_CD_MS  = 220;
 const HIT_CD_MS     = 1200;
 const NUM_ENEMIES   = 60;
 const VARIANTS      = ["enemy_basic","enemy_basic","enemy_heavy","enemy_boss"];
+const ENEMY_SIZE    = { enemy_basic:[10,10], enemy_heavy:[18,18], enemy_boss:[30,30] };
+const ENEMY_COLOR   = { enemy_basic:0x4488ff, enemy_heavy:0xff8800, enemy_boss:0xff2222 };
 
 const COLOR = {
   player:0x00ffcc, wall:0x5577aa,
   bullet_normal:0xffff33, bullet_heavy:0xff8833, bullet_laser:0x33ffff,
 };
 
-// Color del enemigo en funciÃ³n de su Ã¡rea (tamaÃ±o) â†’ azul (pequeÃ±o) a rojo (grande)
-function enemyColor(w, h) {
-  const area = w * h;
-  const MIN_AREA = 8 * 8, MAX_AREA = 20 * 20;  // rango posible de spawn
-  const t = Math.max(0, Math.min(1, (area - MIN_AREA) / (MAX_AREA - MIN_AREA)));
-  // t=0 â†’ azul (pequeÃ±o/dÃ©bil), t=1 â†’ rojo (grande/fuerte)
-  const r = Math.round(80  + t * 175);
-  const g = Math.round(120 - t * 100);
-  const b = Math.round(220 - t * 200);
-  return (r << 16) | (g << 8) | b;
-}
 
 // ================================================================
 // PIXI SETUP
@@ -133,20 +125,20 @@ function spawnWall(x, y, w, h) {
   return addToPool(makeEntity(TYPE.WALL, "wall", x, y, w, h, 0, 0, Infinity, COLOR.wall));
 }
 
-function spawnEnemy() {
-  // TamaÃ±o aleatorio â†’ determina variant y color
-  const ew = 8  + Math.random() * 12 | 0;   // 8â€“19 px
-  const eh = 8  + Math.random() * 12 | 0;
-  const area = ew * eh;
-  // Umbrales de Ã¡rea para clasificar el tipo
-  const variant = area < 100 ? 'enemy_basic'
-                : area < 200 ? 'enemy_heavy'
-                :              'enemy_boss';
-  const col = enemyColor(ew, eh);
+// variant: "enemy_basic" | "enemy_heavy" | "enemy_boss"  (por defecto: aleatorio ponderado)
+// x,y: posición de spawn (por defecto: zona izquierda aleatoria)
+function spawnEnemy(variant, x, y) {
+  if (!variant) {
+    const roll = Math.random();
+    variant = roll < 0.55 ? 'enemy_basic' : roll < 0.85 ? 'enemy_heavy' : 'enemy_boss';
+  }
+  const [ew, eh] = ENEMY_SIZE[variant];
+  const col = ENEMY_COLOR[variant];
+  const sx = (x !== undefined) ? x : (20 + Math.random() * (W() * 0.28));
+  const sy = (y !== undefined) ? y : (20 + Math.random() * (H() - 40));
   return addToPool(makeEntity(
     TYPE.ENEMY, variant,
-    20 + Math.random() * (W() * 0.35),
-    20 + Math.random() * (H() - 40),
+    sx, sy,
     ew, eh,
     (Math.random() - 0.3) * 4,
     (Math.random() - 0.5) * 4,
@@ -161,7 +153,49 @@ function spawnPlayer() {
 function spawnBullet(x, y, vx, vy, btype) {
   const col  = COLOR["bullet_" + btype] ?? 0xffff00;
   const mass = BULLET_MASS[btype] ?? 0.3;  // masa real desde el spawn
-  return addToPool(makeEntity(TYPE.BULLET, "bullet_" + btype, x, y, 6, 6, vx, vy, mass, col));
+  const bs = BULLET_SIZE[btype] ?? 6;
+  return addToPool(makeEntity(TYPE.BULLET, "bullet_" + btype, x, y, bs, bs, vx, vy, mass, col));
+}
+
+// ================================================================
+// ENERGY BARS
+// ================================================================
+const BAR_W = 32, BAR_H = 4, BAR_YOFF = 8;
+
+function showEnergyBar(entity, now) {
+  let bar = energyBars.get(entity.id);
+  if (!bar) {
+    const g = new PIXI.Graphics();
+    app.stage.addChild(g);
+    bar = { entity, gfx: g };
+    energyBars.set(entity.id, bar);
+  }
+  bar.expireAt = now + ENERGY_BAR_DURATION;
+}
+
+function updateEnergyBars(now) {
+  for (const [id, bar] of energyBars) {
+    const e = bar.entity;
+    if (!e.alive || now >= bar.expireAt) {
+      app.stage.removeChild(bar.gfx);
+      bar.gfx.destroy();
+      energyBars.delete(id);
+      continue;
+    }
+    const frac = Math.max(0, e.energy / e.maxEnergy);
+    const timeLeft = (bar.expireAt - now) / ENERGY_BAR_DURATION;
+    const alpha = timeLeft < 0.3 ? timeLeft / 0.3 : 1.0;
+    const g = bar.gfx;
+    g.clear();
+    g.beginFill(0x222222, 0.7 * alpha);
+    g.drawRect(e.x - BAR_W / 2, e.y + e.halfH + BAR_YOFF, BAR_W, BAR_H);
+    g.endFill();
+    const r = Math.round(255 * (1 - frac)), gv = Math.round(200 * frac);
+    const barColor = (r << 16) | (gv << 8);
+    g.beginFill(barColor, alpha);
+    g.drawRect(e.x - BAR_W / 2, e.y + e.halfH + BAR_YOFF, BAR_W * frac, BAR_H);
+    g.endFill();
+  }
 }
 
 // ================================================================
@@ -178,6 +212,9 @@ function syncGraphics() {
 // COLLISION LOGIC
 // ================================================================
 let score = 0;
+// Barras de energía temporales: Map<entityId, {entity, expireAt, gfx}>
+const energyBars = new Map();
+const ENERGY_BAR_DURATION = 3000; // ms
 
 // Ãšnica funciÃ³n de colisiÃ³n: aplica daÃ±o de juego e impulso fÃ­sico.
 // Recibe el solapamiento ox,oy ya calculado por el broadphase.
@@ -195,9 +232,21 @@ function onCollision(a, b, ox, oy, now) {
     if (other.type === TYPE.ENEMY || other.type === TYPE.PLAYER) {
       const btype = bullet.variant.replace("bullet_", "");
       other.energy -= BULLET_DAMAGE[btype] ?? 1;
-      if (other.energy <= 0) { other.alive = false; if (other.type === TYPE.ENEMY) score += 10; }
-      // Impulso: el bullet ya tiene su masa real desde spawn, resolvemos normal
-      applyImpulse(bullet, other, ox, oy);
+      if (other.energy <= 0) {
+        other.alive = false;
+        if (other.type === TYPE.ENEMY) {
+          score += 10;
+          if (other.variant === 'enemy_boss') {
+            for (let _i = 0; _i < 4; _i++) spawnEnemy('enemy_heavy', other.x + (Math.random()-0.5)*30, other.y + (Math.random()-0.5)*30);
+          } else if (other.variant === 'enemy_heavy') {
+            for (let _i = 0; _i < 2; _i++) spawnEnemy('enemy_basic', other.x + (Math.random()-0.5)*20, other.y + (Math.random()-0.5)*20);
+          }
+        }
+      }
+      if (other.type === TYPE.ENEMY) showEnergyBar(other, now);
+      // Impulso: usamos la dirección real de vuelo de la bala como eje,
+      // no el eje AABB mínimo (que puede ser perpendicular al disparo y anular el impulso).
+      applyBulletImpulse(bullet, other);
       bullet.alive = false;
       return;
     }
@@ -218,6 +267,32 @@ function onCollision(a, b, ox, oy, now) {
 
   // â”€â”€ Impulso fÃ­sico (todos los pares no-bullet) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   applyImpulse(a, b, ox, oy);
+}
+
+// Impulso específico para bala: usa la dirección de vuelo como eje normal,
+// garantizando que vn siempre sea negativo (la bala se acerca al objetivo).
+function applyBulletImpulse(bullet, other) {
+  const speed = Math.sqrt(bullet.vx * bullet.vx + bullet.vy * bullet.vy) || 1;
+  const nx = bullet.vx / speed;
+  const ny = bullet.vy / speed;
+
+  // Velocidad relativa proyectada sobre el eje de vuelo
+  const dvx = other.vx - bullet.vx, dvy = other.vy - bullet.vy;
+  const vn  = dvx * nx + dvy * ny;
+  // vn casi siempre será negativo (bala se acerca); si ya se separan, forzamos mínimo impulso
+  const vnClamped = Math.min(vn, -speed * 0.5);
+
+  const invSum = bullet.invMass + other.invMass;
+  if (invSum === 0) return;
+
+  other.sleeping = false;
+  other.sleepN   = 0;
+
+  const rest = Math.min(bullet.restitution, other.restitution);
+  const j    = -(1 + rest) * vnClamped / invSum;
+  // Solo movemos el objetivo (la bala muere igual)
+  other.vx += j * nx * other.invMass;
+  other.vy += j * ny * other.invMass;
 }
 
 // Impulso de Coulomb + fricciÃ³n tangencial + correcciÃ³n posicional.
@@ -414,9 +489,14 @@ app.stage.addChild(aimLine);
 function drawAimLine() {
   aimLine.clear();
   if (!player || !player.alive || gameOver) return;
+  const aimDx = mouse.x - player.x, aimDy = mouse.y - player.y;
+  const aimDist = Math.sqrt(aimDx * aimDx + aimDy * aimDy) || 1;
+  const aimCap = Math.min(aimDist, 200);
+  const aimEx = player.x + (aimDx / aimDist) * aimCap;
+  const aimEy = player.y + (aimDy / aimDist) * aimCap;
   aimLine.lineStyle(1, 0xffffff, 0.35);
   aimLine.moveTo(player.x, player.y);
-  aimLine.lineTo(mouse.x, mouse.y);
+  aimLine.lineTo(aimEx, aimEy);
   // PequeÃ±o cÃ­rculo en el cursor
   aimLine.lineStyle(1, 0xffffff, 0.5);
   aimLine.drawCircle(mouse.x, mouse.y, 4);
@@ -467,6 +547,7 @@ app.ticker.add(() => {
     physicsStep(dt, now);
     purge();
     syncGraphics();
+    updateEnergyBars(now);
     drawAimLine();
     if (player && !player.alive) gameOver = true;
   }
