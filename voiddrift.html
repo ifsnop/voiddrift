@@ -38,7 +38,7 @@
 </div>
 <div id="phaseTimer">--</div>
 <div id="phaseLabel">FASE --</div>
-<div id="scoreHud"><span id="hScore">puntos: 0</span><br><span id="hMass">masa destruida: 0</span></div>
+<div id="scoreHud"><span id="hScore">SCORE: 0</span></div>
 
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js"></script>
 <script>
@@ -1287,7 +1287,6 @@ function syncGraphics() {
 // COLLISION LOGIC
 // ================================================================
 let score = 0;
-let massDestroyed = 0;
 let playerHPBarExpiry   = 0;
 let shieldBarExpiry     = 0;
 let shieldActive        = false;
@@ -1306,7 +1305,6 @@ function onEnemyDeath(enemy, playerKill = false) {
   if (playerKill) {
     const mass = ENERGY[enemy.variant] ?? 1;
     score += mass;
-    massDestroyed += mass;
   }
   if (enemy.variant === 'enemy_boss') {
     for (let i=0;i<4;i++) spawnEnemy('enemy_heavy',enemy.x+(Math.random()-.5)*30,enemy.y+(Math.random()-.5)*30);
@@ -1674,8 +1672,7 @@ function hudUpdate(now) {
       : recharging
         ? ' <span style="color:#999">shield recharge: '+(((SHIELD_MAX_MS-shieldUsedMs)/SHIELD_MAX_MS)*100).toFixed(0)+'%</span>'
         : ' <span style="color:#88ffff">[SPACE: shield]</span>';
-    document.getElementById('hScore').textContent = 'puntos: ' + score;
-  document.getElementById('hMass').textContent  = 'masa destruida: ' + massDestroyed;
+    document.getElementById('hScore').textContent = 'SCORE: ' + score;
   elInfo.innerHTML = 'score: '+score+
       '  weapon: <span style="color:'+wColors[currentWeapon]+'">'+wNames[currentWeapon]+'</span>'+
       shieldInfo+
