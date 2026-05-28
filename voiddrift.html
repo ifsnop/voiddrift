@@ -750,9 +750,8 @@ function updateBirthEffects() {
 const LOCK_MAX             = 5;
 const MISSILE_DAMAGE       = 8;
 const MISSILE_SPEED        = 4;
-const MISSILE_TURN_RATE    = 0.07;
-const MISSILE_LOOP_FRAMES  = 55;
-const MISSILE_SPLINE_LOOPS = 1.5;
+const MISSILE_TURN_RATE    = 0.07;   // max turn per frame during homing
+const MISSILE_LOOP_FRAMES  = 80;     // frames over which spiral decays (1 full loop)
 const MISSILE_SIZE         = 8;
 const MISSILE_COLOR        = 0xff8833;
 
@@ -890,24 +889,27 @@ function updateMissiles(dt, now) {
 
     const target = pool.find(e=>e.alive && e.id===m.targetId);
 
-    if (m.loopFrame < MISSILE_LOOP_FRAMES) {
-      // Loop/spline phase: curve outward before homing
-      m.loopFrame++;
-      m.angle += m.loopDir * (Math.PI*2*MISSILE_SPLINE_LOOPS) / MISSILE_LOOP_FRAMES;
-      m.vx = Math.cos(m.angle)*MISSILE_SPEED;
-      m.vy = Math.sin(m.angle)*MISSILE_SPEED;
-    } else if (target) {
-      // Homing phase
+    // Spiral-then-home: apply a decaying angular offset on top of homing turn.
+    // The offset is a full rotation (2π) spread over MISSILE_LOOP_FRAMES,
+    // decaying to 0 so the spiral tightens naturally into a straight homing path.
+    const spiralStrength = Math.max(0, 1 - m.loopFrame / MISSILE_LOOP_FRAMES);
+    const spiralDelta    = m.loopDir * (Math.PI * 2 / MISSILE_LOOP_FRAMES) * spiralStrength;
+    if (m.loopFrame < MISSILE_LOOP_FRAMES) m.loopFrame++;
+
+    if (target) {
       const dx=target.x-m.x, dy=target.y-m.y;
       const desired=Math.atan2(dy,dx);
       let diff=desired-m.angle;
       while(diff>Math.PI)  diff-=Math.PI*2;
       while(diff<-Math.PI) diff+=Math.PI*2;
-      m.angle+=Math.sign(diff)*Math.min(Math.abs(diff),MISSILE_TURN_RATE);
-      m.vx=Math.cos(m.angle)*MISSILE_SPEED;
-      m.vy=Math.sin(m.angle)*MISSILE_SPEED;
+      // Homing turn + decaying spiral offset
+      m.angle += Math.sign(diff)*Math.min(Math.abs(diff), MISSILE_TURN_RATE) + spiralDelta;
+    } else {
+      // Target dead: fly straight with fading spiral
+      m.angle += spiralDelta;
     }
-    // target dead → fly straight (vx/vy unchanged)
+    m.vx=Math.cos(m.angle)*MISSILE_SPEED;
+    m.vy=Math.sin(m.angle)*MISSILE_SPEED;
 
     m.x+=m.vx*dt; m.y+=m.vy*dt;
     if (m.gfx) { m.gfx.x=m.x; m.gfx.y=m.y; m.gfx.rotation=m.angle; }
@@ -1440,42 +1442,41 @@ app.stage.addChild(playerBarsGfx);
 function drawPlayerBars(now) {
   playerBarsGfx.clear();
   if (!player||gameOver) return;
-  const hpActive=now<playerHPBarExpiry, shActive=now<shieldBarExpiry;
-  if (!hpActive&&!shActive) return;
-  const longestT = Math.max(
-    hpActive?(playerHPBarExpiry-now)/PLAYER_HP_BAR_DURATION:0,
-    shActive?(shieldBarExpiry-now)/PLAYER_HP_BAR_DURATION:0
-  );
-  const alpha=longestT<0.25?longestT/0.25:1.0;
-  const BW=80,BH=6,GAP=3,bx=player.x-BW/2;
-  const byHP=player.y-player.halfH-18, bySH=byHP+BH+GAP;
+
+  const BW=80, BH=6, GAP=3, bx=player.x-BW/2;
+  const byHP=player.y-player.halfH-18;
+
+  // HP bar — always visible, fades only when full
   const hpFrac=Math.max(0,player.energy/player.maxEnergy);
-  playerBarsGfx.beginFill(0x1a0000,0.75*alpha);
+  const hpAlpha = hpFrac < 1 ? 1 : 0.45;  // dim when full, bright when damaged
+  playerBarsGfx.beginFill(0x1a0000, 0.75*hpAlpha);
   playerBarsGfx.drawRect(bx,byHP,BW,BH); playerBarsGfx.endFill();
   const hpR=Math.round(255*(1-hpFrac)), hpG=Math.round(255*hpFrac);
-  playerBarsGfx.beginFill((hpR<<16)|(hpG<<8),alpha);
+  playerBarsGfx.beginFill((hpR<<16)|(hpG<<8), hpAlpha);
   playerBarsGfx.drawRect(bx,byHP,BW*hpFrac,BH); playerBarsGfx.endFill();
-  playerBarsGfx.lineStyle(1,0xff6666,0.6*alpha);
+  playerBarsGfx.lineStyle(1,0xff6666,0.6*hpAlpha);
   playerBarsGfx.drawRect(bx,byHP,BW,BH);
 
-  // Shield bar: recargando (azul apagado avanzando) o carga disponible (cyan)
-  const inCD = now < shieldCooldownUntil;
+  // Shield bar: SIEMPRE visible (no depende de expiry)
+  const inCD2 = now < shieldCooldownUntil;
   let shFrac, shColor;
-  if (inCD) {
+  if (inCD2) {
     const elapsed = SHIELD_COOLDOWN - (shieldCooldownUntil - now);
     shFrac  = Math.max(0, Math.min(1, elapsed / SHIELD_COOLDOWN));
     shColor = 0x336699;
   } else {
     shFrac  = Math.max(0, 1 - shieldUsedMs / SHIELD_MAX_MS);
-    shColor = shieldActive ? 0x00ffff : 0x0088ff;
+    shColor = shieldActive ? 0x00ffff : (shFrac < 1 ? 0x0088ff : 0x00aaff);
   }
+  const BW2=80, BH2=6, bx2=player.x-BW2/2;
+  const bySH2 = player.y-player.halfH-18 + BH2 + GAP;
   playerBarsGfx.lineStyle(0);
-  playerBarsGfx.beginFill(0x001a33,0.75*alpha);
-  playerBarsGfx.drawRect(bx,bySH,BW,BH); playerBarsGfx.endFill();
-  playerBarsGfx.beginFill(shColor,alpha);
-  playerBarsGfx.drawRect(bx,bySH,BW*shFrac,BH); playerBarsGfx.endFill();
-  playerBarsGfx.lineStyle(1,0x44ccff,0.6*alpha);
-  playerBarsGfx.drawRect(bx,bySH,BW,BH);
+  playerBarsGfx.beginFill(0x001a33, 0.75);
+  playerBarsGfx.drawRect(bx2, bySH2, BW2, BH2); playerBarsGfx.endFill();
+  playerBarsGfx.beginFill(shColor, 1);
+  playerBarsGfx.drawRect(bx2, bySH2, BW2*shFrac, BH2); playerBarsGfx.endFill();
+  playerBarsGfx.lineStyle(1, 0x44ccff, 0.6);
+  playerBarsGfx.drawRect(bx2, bySH2, BW2, BH2);
 }
 
 const shieldGfx = new PIXI.Graphics();
