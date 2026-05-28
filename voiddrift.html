@@ -23,6 +23,12 @@
       pointer-events: none; z-index: 10;
       text-align: right;
     }
+  #scoreHud {
+      position: fixed; bottom: 18px; right: 18px;
+      color: #fff; font: 13px monospace;
+      pointer-events: none; z-index: 10;
+      text-align: right; line-height: 1.8;
+    }
   </style>
 </head>
 <body>
@@ -32,6 +38,7 @@
 </div>
 <div id="phaseTimer">--</div>
 <div id="phaseLabel">FASE --</div>
+<div id="scoreHud"><span id="hScore">puntos: 0</span><br><span id="hMass">masa destruida: 0</span></div>
 
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js"></script>
 <script>
@@ -254,14 +261,33 @@ function buildEnemyGfx(e) {
     g.lineStyle(2, 0xff0000, 0.8);
     g.drawCircle(e.halfW, e.halfH, e.halfW - 2);
   } else if (e.variant === 'enemy_blackhole') {
-    // Centro negro con halo violeta — los anillos se dibujan aparte en tiempo real
-    g.beginFill(0x000000);
-    g.drawCircle(e.halfW, e.halfH, e.halfW);
+    // Agujero negro: disco de acreción + horizonte de eventos
+    const cx = e.halfW, cy = e.halfH, r = e.halfW;
+    // Disco de acreción exterior (naranja-amarillo, degradado por capas)
+    for (let layer = 0; layer < 6; layer++) {
+      const t = layer / 5;
+      const lr = r * (1.9 - t * 0.7);
+      const col = t < 0.4
+        ? PIXI.utils.rgb2hex([1.0, 0.55 + t*0.5, 0.0])   // naranja
+        : PIXI.utils.rgb2hex([1.0, 0.9 + t*0.1, 0.2]);   // amarillo
+      const alpha = 0.18 - t * 0.12;
+      g.beginFill(col, alpha);
+      g.drawCircle(cx, cy, lr);
+      g.endFill();
+    }
+    // Horizonte de eventos: anillo naranja brillante
+    g.lineStyle(2.5, 0xff9900, 0.95);
+    g.drawCircle(cx, cy, r * 1.18);
+    g.lineStyle(1.2, 0xffdd44, 0.55);
+    g.drawCircle(cx, cy, r * 1.3);
+    // Singularidad: núcleo negro absoluto
+    g.lineStyle(0);
+    g.beginFill(0x000000, 1.0);
+    g.drawCircle(cx, cy, r * 0.78);
     g.endFill();
-    g.lineStyle(2, 0xcc00ff, 0.9);
-    g.drawCircle(e.halfW, e.halfH, e.halfW);
-    g.beginFill(0x6600cc, 0.4);
-    g.drawCircle(e.halfW, e.halfH, e.halfW * 0.55);
+    // Destello central violeta muy tenue
+    g.beginFill(0x3300aa, 0.18);
+    g.drawCircle(cx, cy, r * 0.38);
     g.endFill();
   } else {
     g.beginFill(e.color);
@@ -369,6 +395,7 @@ function spawnEnemy(variant, x, y) {
   // Spawn burst effect
   spawnBirthEffect(sx, sy, col, Math.max(ew, eh));
   if (variant === 'enemy_blackhole') blackholeSpawnTime = performance.now();
+  if (variant === 'enemy_spawner') e._spawnTime = performance.now();
   return e;
 }
 
@@ -622,10 +649,27 @@ function enemyAI(now) {
         e.gfx.scale.set(sc);
       }
 
-      // Deriva si se queda quieto
-      if (Math.abs(e.vx) < 0.4 && Math.abs(e.vy) < 0.4) {
-        e.vx = (Math.random()-0.5) * 1.8;
-        e.vy = (Math.random()-0.5) * 1.8;
+      // Fase de deambulación (4s) → luego perseguir jugador
+      if (!e._spawnTime) e._spawnTime = now;
+      const roaming = (now - e._spawnTime) < 4000;
+      if (roaming) {
+        // Deriva aleatoria durante los primeros 4 segundos
+        if (!e._roamAngle) e._roamAngle = Math.random() * Math.PI * 2;
+        if (!e._roamNext  || now > e._roamNext) {
+          e._roamAngle += (Math.random()-0.5) * 1.5;
+          e._roamNext = now + 600 + Math.random()*600;
+        }
+        e.vx += Math.cos(e._roamAngle) * 0.06;
+        e.vy += Math.sin(e._roamAngle) * 0.06;
+        e.vx *= 0.96; e.vy *= 0.96;
+        e.sleeping = false; e.sleepN = 0;
+      } else {
+        // Perseguir jugador
+        const dx = player.x - e.x, dy = player.y - e.y;
+        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        e.vx += (dx/dist) * 0.12;
+        e.vy += (dy/dist) * 0.12;
+        e.vx *= 0.94; e.vy *= 0.94;
         e.sleeping = false; e.sleepN = 0;
       }
     }
@@ -694,10 +738,11 @@ function enemyAI(now) {
         app.stage.addChild(e._ringGfx);
       }
       e._ringGfx.clear();
-      e._ringGfx.lineStyle(2, 0xcc00ff, 0.65);
-      e._ringGfx.drawCircle(e.x, e.y, (e._visualSize ?? BLACKHOLE_SIZE) * 1.1);
-      e._ringGfx.lineStyle(1, 0x8800cc, 0.35);
-      e._ringGfx.drawCircle(e.x, e.y, (e._visualSize ?? BLACKHOLE_SIZE) * 1.6);
+      // Halo tenue — el efecto principal lo hace la malla deformada
+      e._ringGfx.lineStyle(1, 0xff9900, 0.22);
+      e._ringGfx.drawCircle(e.x, e.y, (e._visualSize ?? BLACKHOLE_SIZE) * 1.35);
+      e._ringGfx.lineStyle(0.5, 0x6600aa, 0.12);
+      e._ringGfx.drawCircle(e.x, e.y, (e._visualSize ?? BLACKHOLE_SIZE) * 2.0);
       // Tamaño visual con interpolación suave hacia _targetSize
       if (!e._visualSize) e._visualSize = BLACKHOLE_SIZE;
       if (!e._targetSize) e._targetSize = BLACKHOLE_SIZE;
@@ -1243,6 +1288,7 @@ function syncGraphics() {
 // COLLISION LOGIC
 // ================================================================
 let score = 0;
+let massDestroyed = 0;
 let playerHPBarExpiry   = 0;
 let shieldBarExpiry     = 0;
 let shieldActive        = false;
@@ -1258,7 +1304,9 @@ let blackholeSpawnTime = 0;
 const warpGridGfx = new PIXI.Graphics();  // se añade al stage en setup()
 
 function onEnemyDeath(enemy) {
-  score += 10;
+  const mass = ENERGY[enemy.variant] ?? 1;
+  score += mass;
+  massDestroyed += mass;
   if (enemy.variant === 'enemy_boss') {
     for (let i=0;i<4;i++) spawnEnemy('enemy_heavy',enemy.x+(Math.random()-.5)*30,enemy.y+(Math.random()-.5)*30);
   } else if (enemy.variant === 'enemy_heavy') {
@@ -1629,7 +1677,9 @@ function hudUpdate(now) {
       : recharging
         ? ' <span style="color:#999">shield recharge: '+(((SHIELD_MAX_MS-shieldUsedMs)/SHIELD_MAX_MS)*100).toFixed(0)+'%</span>'
         : ' <span style="color:#88ffff">[SPACE: shield]</span>';
-    elInfo.innerHTML = "score: "+score+
+    document.getElementById('hScore').textContent = 'puntos: ' + score;
+  document.getElementById('hMass').textContent  = 'masa destruida: ' + massDestroyed;
+  elInfo.innerHTML = 'score: '+score+
       '  weapon: <span style="color:'+wColors[currentWeapon]+'">'+wNames[currentWeapon]+'</span>'+
       shieldInfo+
       '  <span style="color:#888">Z/X/C/V/B/N/M: spawn</span>'+
@@ -1817,12 +1867,12 @@ function drawWarpGrid() {
     for (const bh of blackholes) {
       if (!bh._massAbsorbed) bh._massAbsorbed = 0;
       const bhRadius = BLACKHOLE_BASE_RADIUS + bh._massAbsorbed * BLACKHOLE_RADIUS_PER_MASS;
-      const WARP_FALLOFF = bhRadius * 2.4;
-      const MAX_WARP = bhRadius * 0.6;
+      const WARP_FALLOFF = bhRadius * 3.5;
+      const MAX_WARP = bhRadius * 1.4;
       const dx = bh.x - wx, dy = bh.y - wy;
       const d = Math.sqrt(dx*dx + dy*dy) || 1;
       if (d < WARP_FALLOFF) {
-        const strength = Math.pow(1 - d / WARP_FALLOFF, 2.0) * MAX_WARP;
+        const strength = Math.pow(1 - d / WARP_FALLOFF, 1.4) * MAX_WARP;  // curva más suave = efecto más gradual y amplio
         wx += (dx/d) * strength;
         wy += (dy/d) * strength;
       }
@@ -1831,8 +1881,8 @@ function drawWarpGrid() {
   };
 
   // Color de la rejilla: violeta tenue si hay blackholes, azul muy oscuro si no
-  const gridAlpha = blackholes.length > 0 ? 0.30 : 0.10;
-  const gridColor = blackholes.length > 0 ? 0x7700bb : 0x223366;
+  const gridAlpha = blackholes.length > 0 ? 0.42 : 0.09;
+  const gridColor = blackholes.length > 0 ? 0x9900dd : 0x1a2244;
 
   warpGridGfx.lineStyle(1, gridColor, gridAlpha);
 
