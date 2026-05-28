@@ -1355,11 +1355,14 @@ function onCollision(a, b, ox, oy, now) {
     }
 
     // Bala del jugador
-    if (other.type === TYPE.BULLET && other.isEnemyBullet) {
-      // bala del jugador destruye bala enemiga
-      spawnFragments(bullet.x, bullet.y, bullet.vx*0.3, bullet.vy*0.3, 0xffaa00, 5);
-      other.alive = false;
-      bullet.alive = false;
+    if (other.type === TYPE.BULLET) {
+      if (other.isEnemyBullet) {
+        // bala del jugador destruye bala enemiga
+        spawnFragments(bullet.x, bullet.y, bullet.vx*0.3, bullet.vy*0.3, 0xffaa00, 5);
+        other.alive = false;
+        bullet.alive = false;
+      }
+      // balas del jugador entre sí: ignorar siempre
       return;
     }
     if (other.type === TYPE.WALL) {
