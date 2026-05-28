@@ -131,7 +131,6 @@ const BLACKHOLE_BASE_FORCE      = 2;     // fuerza a la mitad
 const BLACKHOLE_FORCE_PER_MASS  = 0.04;  // crecimiento de fuerza muy lento
 const BLACKHOLE_ESCAPE_FRAC     = 0.15;  // solo el 15% interior es zona de no-escape
 const BLACKHOLE_DRIFT_ACCEL     = 0.018; // aceleración de deriva lenta (sin centro fijo)
-const BLACKHOLE_RING_COUNT      = 5;     // círculos concéntricos visibles
 const BLACKHOLE_SIZE            = 28;    // hitbox (cuadrado)
 const BLACKHOLE_ORBIT_SPEED     = 0.18;  // rad/s para órbita mutua entre 2 blackholes
 
@@ -159,9 +158,6 @@ const SHIELD_HIT_CD    = 600;
 
 // --- BALAS del jugador ---
 const BULLET_DAMAGE = { normal:1, heavy:3, laser:6 };
-const AUTOBEAM_RADIUS   = 80;    // radio de autodetección del rayo (px)
-const AUTOBEAM_DAMAGE   = 1.5;   // 1/4 del laser (laser=6)
-const AUTOBEAM_TICK_MS  = 120;   // cadencia de daño en ms
 const BULLET_SPEED  = { normal:10, heavy:7, laser:18 };
 const BULLET_MASS   = { normal:0.3, heavy:1.5, laser:0.05 };
 const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4 };
@@ -199,6 +195,42 @@ const PLAYER_ACCEL   = 0.025;
 const PLAYER_DAMPING = 0.965;
 const BULLET_CD_MS   = 220;
 const HIT_CD_MS      = 1200;
+
+// --- AUTO-BEAM (arma 4) ---
+const AUTOBEAM_RADIUS     = 80;     // radio de búsqueda de objetivo (px)
+const AUTOBEAM_DAMAGE     = 1.5;    // daño por tick (1/4 del laser)
+const AUTOBEAM_TICK_MS    = 120;    // ms entre ticks de daño
+const AUTOBEAM_MIN_SHOW   = 250;    // ms mínimos de rayo visible tras matar
+
+// --- MISIL / LOCK-ON ---
+const LOCK_MAX            = 5;      // máximo de objetivos simultáneos
+const MISSILE_DAMAGE      = 8;
+const MISSILE_SPEED       = 4;
+const MISSILE_TURN_RATE   = 0.07;   // giro máximo por frame
+const MISSILE_LOOP_FRAMES = 80;     // frames que dura la espiral inicial
+const MISSILE_SIZE        = 8;
+const MISSILE_COLOR       = 0xff8833;
+
+// --- PAREDES INTERIORES ---
+const WALL_COUNT_MIN  = 7;
+const WALL_COUNT_MAX  = 11;
+const WALL_MIN_SHORT  = 12;
+const WALL_MAX_SHORT  = 20;
+const WALL_MIN_LONG   = 45;
+const WALL_MAX_LONG   = 130;
+const WALL_MARGIN     = 60;
+const WALL_MIN_SEP    = 55;
+
+// --- REJILLA DE FONDO (warp grid) ---
+const GRID_STEP       = 48;         // píxeles entre líneas de la malla
+const GRID_ALPHA      = 0.38;       // alpha base de las líneas
+const GRID_COLOR      = 0xaa44ff;   // color de las líneas
+const GRID_DEFORM_DIV = 80;         // divisor para extra-alpha por deformación
+const GRID_EXTRA_MAX  = 0.55;       // alpha extra máximo en zona deformada
+// Parámetros de la proyección "tela con bola":
+const FABRIC_DEPTH    = 420;        // hundimiento Z máximo (px virtuales)
+const FABRIC_SPREAD   = 1.8;        // multiplicador del radio BH para la deformación
+const FABRIC_VIEW     = 900;        // distancia virtual del ojo (perspectiva)
 
 // --- TAMAÑOS y COLORES ---
 const ENEMY_SIZE = {
@@ -432,7 +464,6 @@ function spawnEnemy(variant, x, y) {
   ));
   // Spawn burst effect
   spawnBirthEffect(sx, sy, col, Math.max(ew, eh));
-  if (variant === 'enemy_blackhole') blackholeSpawnTime = performance.now();
   if (variant === 'enemy_spawner') e._spawnTime = performance.now();
   return e;
 }
@@ -994,14 +1025,6 @@ function updateBirthEffects() {
 // ================================================================
 // LOCK-ON & MISSILE SYSTEM
 // ================================================================
-const LOCK_MAX             = 5;
-const MISSILE_DAMAGE       = 8;
-const MISSILE_SPEED        = 4;
-const MISSILE_TURN_RATE    = 0.07;   // max turn per frame during homing
-const MISSILE_LOOP_FRAMES  = 80;     // frames over which spiral decays (1 full loop)
-const MISSILE_SIZE         = 8;
-const MISSILE_COLOR        = 0xff8833;
-
 const lockTargets = [];
 const missiles    = [];
 
@@ -1358,12 +1381,9 @@ let playerHPBarExpiry   = 0;
 let shieldBarExpiry     = 0;
 let shieldActive        = false;
 let shieldUsedMs        = 0;
-let shieldCooldownUntil = 0;
-const shieldHitMap      = new Map();
+const shieldHitMap = new Map();
 
-// --- BLACKHOLE state ---
-const blackholeGfx = new PIXI.Graphics();
-let blackholeSpawnTime = 0;
+// --- BLACKHOLE / GRID state ---
 
 // Malla de fondo permanente deformada por blackholes
 const warpGridGfx  = new PIXI.Graphics();  // se añade al stage en setup()
@@ -1611,16 +1631,13 @@ function physicsStep(dt, now) {
         if (e.type === TYPE.PLAYER) {
           e.energy = 0; e.alive = false;
         } else {
-          // absorción por blackhole — no puntúa al jugador
-          e.alive = false;
+              e.alive = false;  // absorbed — no player score
         }
         // El blackhole no recibe impulso — masa infinita
         spawnFragments(e.x, e.y, 0, 0, e.color ?? 0xffffff, 8);
       }
     }
   }
-  if (blackholes.length === 0) blackholeGfx.clear();
-
   // Broadphase
   const alive=pool.filter(e=>e.alive);
   alive.sort((a,b)=>a.x-a.halfW-(b.x-b.halfW));
@@ -1691,9 +1708,7 @@ function inputUpdate(now) {
   player.sleeping=false; player.sleepN=0;
 
   // --- SHIELD ---
-  // Dos estados: activo (SPACE pulsado y carga > 0) o inactivo (recarga).
-  // Cuando la carga llega a 0 el escudo se desactiva y no puede reactivarse
-  // hasta que la carga se haya recuperado por encima de SHIELD_MIN_TO_USE.
+  // SHIELD: active while SPACE held and charge > 0. Recharges when inactive.
   const spDown = keys["Space"];
 
   if (shieldActive) {
@@ -1777,8 +1792,7 @@ function hudUpdate(now) {
         ? ' <span style="color:#999">shield recharge: '+(((SHIELD_MAX_MS-shieldUsedMs)/SHIELD_MAX_MS)*100).toFixed(0)+'%</span>'
         : ' <span style="color:#88ffff">[SPACE: shield]</span>';
     document.getElementById('hScore').textContent = 'SCORE: ' + score;
-  elInfo.innerHTML = 'score: '+score+
-      '  weapon: <span style="color:'+wColors[currentWeapon]+'">'+wNames[currentWeapon]+(weaponSpread>0 ? ' m'+(weaponSpread+1) : '')+'</span>'+
+  elInfo.innerHTML = '  weapon: <span style="color:'+wColors[currentWeapon]+'">'+wNames[currentWeapon]+(weaponSpread>0 ? ' m'+(weaponSpread+1) : '')+'</span>'+
       shieldInfo+
       beamInfo+
       '  <span style="color:#888">Z/X/C/V/B/N/M: spawn</span>'+
@@ -1876,16 +1890,6 @@ function drawShield(now) {
 // SETUP  —  paredes interiores generadas aleatoriamente
 // ================================================================
 
-// Parámetros para la generación aleatoria de paredes interiores
-const WALL_COUNT_MIN  = 7;    // mínimo de paredes interiores
-const WALL_COUNT_MAX  = 11;   // máximo de paredes interiores
-const WALL_MIN_SHORT  = 12;   // lado corto mínimo (px)
-const WALL_MAX_SHORT  = 20;   // lado corto máximo
-const WALL_MIN_LONG   = 45;   // lado largo mínimo
-const WALL_MAX_LONG   = 130;  // lado largo máximo
-const WALL_MARGIN     = 60;   // distancia mínima a los bordes del escenario
-const WALL_MIN_SEP    = 55;   // separación mínima entre centros de paredes
-
 function randBetween(a, b) { return a + Math.random() * (b - a); }
 
 function wallsOverlap(ax, ay, aw, ah, bx, by, bw, bh, margin) {
@@ -1931,7 +1935,6 @@ function setup() {
   if (!app.stage.children.includes(aimLine))       app.stage.addChild(aimLine);
   if (!app.stage.children.includes(playerBarsGfx)) app.stage.addChild(playerBarsGfx);
   if (!app.stage.children.includes(shieldGfx))     app.stage.addChild(shieldGfx);
-  if (!app.stage.children.includes(blackholeGfx))  app.stage.addChild(blackholeGfx);
   if (!app.stage.children.includes(autoBeamGfx))   app.stage.addChild(autoBeamGfx);
   const sw=W(), sh=H(), WS=14;
   // Paredes perimetrales
@@ -1950,14 +1953,12 @@ function setup() {
 // ================================================================
 // AUTO-BEAM (arma 4)
 // ================================================================
-const AUTOBEAM_MIN_SHOW_MS = 250;  // beam visible at least this long after kill
-
 function updateAutoBeam(now) {
   autoBeamGfx.clear();
   if (!autoBeamOn || !player || !player.alive) return;
 
-  // If target just died, hold beam at last position for AUTOBEAM_MIN_SHOW_MS
-  const inDeathHold = autoBeamLastPos && (now - autoBeamDeathTime) < AUTOBEAM_MIN_SHOW_MS;
+  // If target just died, hold beam at last position for AUTOBEAM_MIN_SHOW ms
+  const inDeathHold = autoBeamLastPos && (now - autoBeamDeathTime) < AUTOBEAM_MIN_SHOW;
 
   if (!autoBeamTarget || !autoBeamTarget.alive) {
     if (!inDeathHold) {
@@ -1974,7 +1975,7 @@ function updateAutoBeam(now) {
     }
     // During hold: draw fading beam to last position and return
     if (inDeathHold && autoBeamLastPos) {
-      const fade = 1 - (now - autoBeamDeathTime) / AUTOBEAM_MIN_SHOW_MS;
+      const fade = 1 - (now - autoBeamDeathTime) / AUTOBEAM_MIN_SHOW;
       const tx = autoBeamLastPos.x, ty = autoBeamLastPos.y;
       const px = player.x, py = player.y;
       autoBeamGfx.lineStyle(6,   0x0044ff, 0.18 * fade);
@@ -2030,8 +2031,6 @@ function updateAutoBeam(now) {
 // ================================================================
 // WARPED GRID (HUD cosmético permanente)
 // ================================================================
-const GRID_STEP = 48;
-
 function drawWarpGrid() {
   warpGridGfx.clear();
   const sw = W(), sh = H();
@@ -2043,18 +2042,16 @@ function drawWarpGrid() {
   // hacia el blackhole por la tangente del ángulo de inclinación de la tela,
   // y además se escala la posición proyectada (perspectiva cónica).
   // El resultado visual es la característica forma de embudo/cuenco.
-  const FABRIC_DEPTH  = 420;   // profundidad máxima del hundimiento (px virtuales de Z)
-  const FABRIC_SPREAD = 1.8;   // cuántos radios de BH abarca la deformación visible
-  const VIEW_DIST     = 900;   // distancia virtual del "ojo" a la tela (perspectiva)
+  // Fabric warp params defined in config: FABRIC_DEPTH, FABRIC_SPREAD, FABRIC_VIEW
 
   const warp = (px, py) => {
     let wx = px, wy = py;
     for (const bh of blackholes) {
       if (!bh._massAbsorbed) bh._massAbsorbed = 0;
-      const R = (BLACKHOLE_BASE_RADIUS + bh._massAbsorbed * BLACKHOLE_RADIUS_PER_MASS) * FABRIC_SPREAD;
+      const bhR = BLACKHOLE_BASE_RADIUS + (bh._massAbsorbed ?? 0) * BLACKHOLE_RADIUS_PER_MASS;
+      const R = bhR * FABRIC_SPREAD;
       const dx = px - bh.x, dy = py - bh.y;
-      const d2 = dx*dx + dy*dy;
-      const d  = Math.sqrt(d2) || 0.001;
+      const d  = Math.sqrt(dx*dx + dy*dy) || 0.001;
       if (d >= R) continue;
 
       // Depresión en Z: forma de cuenco suave — máxima en el centro, cero en el borde
@@ -2063,7 +2060,7 @@ function drawWarpGrid() {
 
       // Proyección perspectiva: el vértice se aleja del "ojo" → parece más pequeño
       // y se acerca al centro de la depresión
-      const scale = VIEW_DIST / (VIEW_DIST + dz);    // <1 cerca del centro
+      const scale = FABRIC_VIEW / (FABRIC_VIEW + dz);    // <1 cerca del centro
 
       // Nuevo punto proyectado: escala alrededor del blackhole
       wx += (px - bh.x) * (scale - 1);  // mueve hacia bh.x
@@ -2072,11 +2069,7 @@ function drawWarpGrid() {
     return [wx, wy];
   };
 
-  // Sin blackholes: rejilla muy tenue permanente
-  // Con blackholes: rejilla más visible, tono violeta
-  const hasBH = blackholes.length > 0;
-  const gridAlpha = 0.38;
-  const gridColor = 0xaa44ff;
+  // Grid appearance constants defined in config block
 
   // Dibujar segmento a segmento para poder variar el alpha con la distancia
   for (let gy = 0; gy <= sh + GRID_STEP; gy += GRID_STEP) {
@@ -2087,12 +2080,13 @@ function drawWarpGrid() {
       const [bx, by] = warp(x1, row);
       // Alpha proporcional al desplazamiento — líneas más deformadas son más visibles
       const def = Math.hypot(ax - x0, ay - row) + Math.hypot(bx - x1, by - row);
-      const extra = Math.min(def / 80, 0.55);
-      warpGridGfx.lineStyle(1, gridColor, gridAlpha + extra);
+      const extra = Math.min(def / GRID_DEFORM_DIV, GRID_EXTRA_MAX);
+      warpGridGfx.lineStyle(1, GRID_COLOR, GRID_ALPHA + extra);
       warpGridGfx.moveTo(ax, ay);
       warpGridGfx.lineTo(bx, by);
     }
   }
+  // Vertical lines
   for (let gx = 0; gx <= sw + GRID_STEP; gx += GRID_STEP) {
     const col = Math.min(gx, sw);
     for (let gy = 0; gy < sh; gy += GRID_STEP) {
@@ -2100,8 +2094,8 @@ function drawWarpGrid() {
       const [ax, ay] = warp(col, y0);
       const [bx, by] = warp(col, y1);
       const def = Math.hypot(ax - col, ay - y0) + Math.hypot(bx - col, by - y1);
-      const extra = Math.min(def / 80, 0.55);
-      warpGridGfx.lineStyle(1, gridColor, gridAlpha + extra);
+      const extra = Math.min(def / GRID_DEFORM_DIV, GRID_EXTRA_MAX);
+      warpGridGfx.lineStyle(1, GRID_COLOR, GRID_ALPHA + extra);
       warpGridGfx.moveTo(ax, ay);
       warpGridGfx.lineTo(bx, by);
     }
@@ -2281,8 +2275,6 @@ function startGame() {
   prevTime = null;
   shieldActive = false;
   shieldUsedMs = 0;
-  shieldCooldownUntil = 0;
-  blackholeGfx.clear();
   warpGridGfx.clear();
   sessionStartTime = performance.now();
   setup();  // re-creates player, walls, re-adds persistent gfx layers
