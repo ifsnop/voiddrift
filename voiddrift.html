@@ -485,8 +485,8 @@ function startPhase(n, now) {
 
 function phaseUpdate(now) {
   if (!phaseActive) return;
-  // Freeze timer while paused: shift phaseStartTime forward each paused frame
-  if (paused) {
+  // Freeze timer while paused or game over
+  if (paused || gameOver) {
     phaseStartTime += app.ticker.deltaMS;
     return;
   }
@@ -1323,37 +1323,29 @@ function inputUpdate(now) {
   player.sleeping=false; player.sleepN=0;
 
   // --- SHIELD ---
-  // - Se activa con SPACE siempre que haya carga Y no esté en cooldown (cooldown solo si se agota del todo).
-  // - Soltar el escudo NO inicia cooldown. La carga se mantiene y se recarga pasado un momento.
-  // - La carga se recupera automáticamente cuando el escudo NO está activo y NO está en cooldown,
-  //   a razón de SHIELD_REGEN_MS por ms (inverso de SHIELD_COOLDOWN).
-  // - El cooldown SOLO ocurre si la carga se agota por completo (shieldUsedMs >= SHIELD_MAX_MS).
-  const spDown     = keys["Space"];
-  const inCooldown = now < shieldCooldownUntil;
+  // Dos estados: activo (SPACE pulsado y carga > 0) o inactivo (recarga).
+  // Cuando la carga llega a 0 el escudo se desactiva y no puede reactivarse
+  // hasta que la carga se haya recuperado por encima de SHIELD_MIN_TO_USE.
+  const spDown = keys["Space"];
 
-  // Fin de cooldown: resetear medidor ANTES de calcular hasCharge
-  if (!inCooldown && shieldUsedMs >= SHIELD_MAX_MS) {
-    shieldUsedMs = 0;
-  }
-
-  // hasCharge se calcula después del reset para que sea correcto este mismo frame
-  const hasCharge = shieldUsedMs < SHIELD_MAX_MS;
-
-  if (spDown && hasCharge && !inCooldown) {
-    shieldActive = true;
+  if (shieldActive) {
+    // Gastar carga
     shieldUsedMs = Math.min(SHIELD_MAX_MS, shieldUsedMs + app.ticker.deltaMS);
     shieldBarExpiry = now + 3500;
-    if (shieldUsedMs >= SHIELD_MAX_MS) {
+    if (shieldUsedMs >= SHIELD_MAX_MS || !spDown) {
+      // Se agoto o el jugador solto SPACE
       shieldActive = false;
-      shieldCooldownUntil = now + SHIELD_COOLDOWN;
-      shieldBarExpiry = now + SHIELD_COOLDOWN + 500;
     }
   } else {
-    shieldActive = false;
-    // Regeneración pasiva: siempre que no esté en cooldown y haya algo gastado
-    if (!inCooldown && shieldUsedMs > 0) {
+    // Recargar siempre que el escudo este desactivado
+    if (shieldUsedMs > 0) {
       shieldUsedMs = Math.max(0, shieldUsedMs - app.ticker.deltaMS * (SHIELD_MAX_MS / SHIELD_COOLDOWN));
       shieldBarExpiry = now + 2000;
+    }
+    // Activar si SPACE pulsado y hay carga suficiente
+    if (spDown && shieldUsedMs <= SHIELD_MAX_MS - SHIELD_MIN_TO_USE) {
+      shieldActive = true;
+      shieldBarExpiry = now + 3500;
     }
   }
 
@@ -1390,14 +1382,12 @@ function hudUpdate(now) {
   if (player) {
     const wNames={normal:"1-Basic",heavy:"2-Heavy",laser:"3-Laser"};
     const wColors={normal:"#ffff33",heavy:"#ff8833",laser:"#33ffff"};
-    const cdLeft = shieldCooldownUntil>now ? ((shieldCooldownUntil-now)/1000).toFixed(1) : null;
+    const recharging = !shieldActive && shieldUsedMs > 0;
     const shieldInfo = shieldActive
       ? ' <span style="color:#88ffff">[SHIELD ACTIVE]</span>'
-      : shieldUsedMs===0
-        ? ' <span style="color:#88ffff">[SPACE: shield]</span>'
-        : cdLeft
-          ? ' <span style="color:#999">shield recharge: '+cdLeft+'s</span>'
-          : ' <span style="color:#88ffff">[shield ready]</span>';
+      : recharging
+        ? ' <span style="color:#999">shield recharge: '+(((SHIELD_MAX_MS-shieldUsedMs)/SHIELD_MAX_MS)*100).toFixed(0)+'%</span>'
+        : ' <span style="color:#88ffff">[SPACE: shield]</span>';
     elInfo.innerHTML = "score: "+score+
       '  weapon: <span style="color:'+wColors[currentWeapon]+'">'+wNames[currentWeapon]+'</span>'+
       shieldInfo+
