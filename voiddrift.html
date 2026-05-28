@@ -209,6 +209,8 @@ function updateFragments(dt, now) {
 // ================================================================
 // ENERGY BARS
 // ================================================================
+const energyBars = new Map();  // Map<entityId, {entity, expireAt, gfx}>
+const ENERGY_BAR_DURATION = 3000; // ms
 const BAR_W = 32, BAR_H = 4, BAR_YOFF = 8;
 
 function showEnergyBar(entity, now) {
@@ -261,9 +263,12 @@ function syncGraphics() {
 // COLLISION LOGIC
 // ================================================================
 let score = 0;
-// Barras de energia temporales: Map<entityId, {entity, expireAt, gfx}>
-const energyBars = new Map();
-const ENERGY_BAR_DURATION = 3000; // ms
+let playerHPBarExpiry       = 0;
+const PLAYER_HP_BAR_DURATION = 3000;
+let shieldActive        = false;
+let shieldUsedMs        = 0;       // ms consumed of shield charge
+let shieldCooldownUntil = 0;       // perf.now() when fully recharged
+const shieldHitMap      = new Map(); // enemyId -> lastHitTime
 
 // Ãšnica funcion de colision: aplica dano de juego e impulso fisico.
 // Recibe el solapamiento ox,oy ya calculado por el broadphase.
@@ -484,10 +489,6 @@ const mouse = { x: 0, y: 0, down: false };
 let player = null;
 let lastShot = 0;
 let currentWeapon = "normal";
-let shieldActive        = false;
-let shieldUsedMs        = 0;      // ms consumed (max = SHIELD_MAX_MS)
-let shieldCooldownUntil = 0;      // timestamp when fully recharged
-const shieldHitMap      = new Map(); // enemyId -> lastHitTime // "normal" | "heavy" | "laser"
 
 window.addEventListener("keydown", e => {
   if (e.code === "KeyP") {
@@ -596,6 +597,10 @@ function hudUpdate(now) {
       "   WASD-click-1/2/3-SPACE";
   }
 }
+// Graphics for aim line (must be declared before drawAimLine)
+const aimLine = new PIXI.Graphics();
+app.stage.addChild(aimLine);
+
 function drawAimLine() {
   aimLine.clear();
   if (!player || !player.alive || gameOver) return;
@@ -615,8 +620,6 @@ function drawAimLine() {
 // Player HP bar (PixiJS, shown only after taking damage)
 const playerHPBar = new PIXI.Graphics();
 app.stage.addChild(playerHPBar);
-let playerHPBarExpiry = 0;
-const PLAYER_HP_BAR_DURATION = 3000;
 
 function drawPlayerHPBar(now) {
   playerHPBar.clear();
