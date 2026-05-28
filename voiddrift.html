@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Game Engine</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; }
+    #hud {
+      position: fixed; top: 8px; left: 12px;
+      color: #fff; font: 14px monospace;
+      pointer-events: none; z-index: 10; line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+<div id="hud">
+  <span id="hFPS">cargando...</span><br>
+  <span id="hInfo"></span>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js"></script>
+<script>
+// ================================================================
+// CONSTANTS â€” edita aquÃ­ para rebalancear el juego
+// ================================================================
+const TYPE = { ENEMY:"enemy", PLAYER:"player", WALL:"wall", BULLET:"bullet" };
+
+const ENERGY        = { enemy_basic:2, enemy_heavy:5, enemy_boss:15, player:10, wall:Infinity };
+const BULLET_DAMAGE = { normal:1, heavy:3, laser:6 };
+const BULLET_SPEED  = { normal:10, heavy:7, laser:18 };
+const BULLET_MASS   = { normal:1.2, heavy:3.5, laser:0.4 };   // masa del proyectil (afecta al impulso físico)
+const RESTITUTION   = 0.75;
+const FRICTION      = 0.08;
+const SLEEP_THRESH  = 0.003;  // vÂ² mÃ­nimo para estar despierto
+const SLEEP_FRAMES  = 20;
+const PLAYER_SPEED  = 4;
+const PLAYER_ACCEL  = 0.025;  // inercia muy alta: tarda más en alcanzar velocidad objetivo
+const PLAYER_DAMPING = 0.965; // rozamiento suave: se frena lentamente sin input
+const BULLET_CD_MS  = 220;
+const HIT_CD_MS     = 1200;
+const NUM_ENEMIES   = 60;
+const VARIANTS      = ["enemy_basic","enemy_basic","enemy_heavy","enemy_boss"];
+
+const COLOR = {
+  player:0x00ffcc, wall:0x5577aa,
+  bullet_normal:0xffff33, bullet_heavy:0xff8833, bullet_laser:0x33ffff,
+};
+
+// Color del enemigo en funciÃ³n de su Ã¡rea (tamaÃ±o) â†’ azul (pequeÃ±o) a rojo (grande)
+function enemyColor(w, h) {
+  const area = w * h;
+  const MIN_AREA = 8 * 8, MAX_AREA = 20 * 20;  // rango posible de spawn
+  const t = Math.max(0, Math.min(1, (area - MIN_AREA) / (MAX_AREA - MIN_AREA)));
+  // t=0 â†’ azul (pequeÃ±o/dÃ©bil), t=1 â†’ rojo (grande/fuerte)
+  const r = Math.round(80  + t * 175);
+  const g = Math.round(120 - t * 100);
+  const b = Math.round(220 - t * 200);
+  return (r << 16) | (g << 8) | b;
+}
+
+// ================================================================
+// PIXI SETUP
+// ================================================================
+PIXI.BaseTexture.defaultOptions.scaleMode = PIXI.SCALE_MODES.NEAREST;
+
+const app = new PIXI.Application({
+  width:           window.innerWidth,
+  height:          window.innerHeight,
+  backgroundColor: 0x111111,
+  resolution:      window.devicePixelRatio || 1,
+  autoDensity:     true,
+});
+document.body.appendChild(app.view);
+
+// ================================================================
+// ENTITY
+// ================================================================
+let uid = 0;
+
+function makeEntity(type, variant, x, y, w, h, vx, vy, mass, color) {
+  return {
+    id: uid++, type, variant, alive: true,
+    energy: ENERGY[variant] ?? 1,
+    maxEnergy: ENERGY[variant] ?? 1,
+    x, y, vx, vy, w, h,
+    halfW: w * 0.5, halfH: h * 0.5,
+    mass,
+    invMass: (mass === Infinity) ? 0 : 1 / mass,
+    restitution: RESTITUTION, friction: FRICTION,
+    sleepN: 0, sleeping: false,
+    lastHit: 0,
+    color, gfx: null,
+  };
+}
+
+// ================================================================
+// POOL
+// ================================================================
+const pool = [];
+
+function addToPool(e) {
+  // Crear Graphics inmediatamente
+  const g = new PIXI.Graphics();
+  g.beginFill(e.color);
+  g.drawRect(0, 0, e.w, e.h);
+  g.endFill();
+  g.pivot.x = e.halfW;
+  g.pivot.y = e.halfH;
+  g.x = e.x;
+  g.y = e.y;
+  app.stage.addChild(g);
+  e.gfx = g;
+  pool.push(e);
+  return e;
+}
+
+function purge() {
+  for (let i = pool.length - 1; i >= 0; i--) {
+    const e = pool[i];
+    if (!e.alive) {
+      if (e.gfx) { app.stage.removeChild(e.gfx); e.gfx.destroy(); e.gfx = null; }
+      pool.splice(i, 1);
+    }
+  }
+}
+
+// ================================================================
+// SPAWN HELPERS
+// ================================================================
+const W = () => app.screen.width;
+const H = () => app.screen.height;
+
+function spawnWall(x, y, w, h) {
+  return addToPool(makeEntity(TYPE.WALL, "wall", x, y, w, h, 0, 0, Infinity, COLOR.wall));
+}
+
+function spawnEnemy() {
+  // TamaÃ±o aleatorio â†’ determina variant y color
+  const ew = 8  + Math.random() * 12 | 0;   // 8â€“19 px
+  const eh = 8  + Math.random() * 12 | 0;
+  const area = ew * eh;
+  // Umbrales de Ã¡rea para clasificar el tipo
+  const variant = area < 100 ? 'enemy_basic'
+                : area < 200 ? 'enemy_heavy'
+                :              'enemy_boss';
+  const col = enemyColor(ew, eh);
+  return addToPool(makeEntity(
+    TYPE.ENEMY, variant,
+    20 + Math.random() * (W() * 0.35),
+    20 + Math.random() * (H() - 40),
+    ew, eh,
+    (Math.random() - 0.3) * 4,
+    (Math.random() - 0.5) * 4,
+    1, col
+  ));
+}
+
+function spawnPlayer() {
+  return addToPool(makeEntity(TYPE.PLAYER, "player", W() * 0.75, H() * 0.5, 20, 20, 0, 0, 2, COLOR.player));
+}
+
+function spawnBullet(x, y, vx, vy, btype) {
+  const col  = COLOR["bullet_" + btype] ?? 0xffff00;
+  const mass = BULLET_MASS[btype] ?? 0.3;  // masa real desde el spawn
+  return addToPool(makeEntity(TYPE.BULLET, "bullet_" + btype, x, y, 6, 6, vx, vy, mass, col));
+}
+
+// ================================================================
+// SYNC: lÃ³gica â†’ visual  (solo x,y â€” gfx ya existe)
+// ================================================================
+function syncGraphics() {
+  for (let i = 0; i < pool.length; i++) {
+    const e = pool[i];
+    if (e.gfx) { e.gfx.x = e.x; e.gfx.y = e.y; }
+  }
+}
+
+// ================================================================
+// COLLISION LOGIC
+// ================================================================
+let score = 0;
+
+// Ãšnica funciÃ³n de colisiÃ³n: aplica daÃ±o de juego e impulso fÃ­sico.
+// Recibe el solapamiento ox,oy ya calculado por el broadphase.
+function onCollision(a, b, ox, oy, now) {
+  // â”€â”€ LÃ³gica de juego â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  if (a.type === TYPE.BULLET || b.type === TYPE.BULLET) {
+    const bullet = a.type === TYPE.BULLET ? a : b;
+    const other  = a.type === TYPE.BULLET ? b : a;
+    if (!bullet.alive) return;
+
+    if (other.type === TYPE.WALL) {
+      bullet.alive = false;
+      return;  // paredes inamovibles: sin impulso
+    }
+    if (other.type === TYPE.ENEMY || other.type === TYPE.PLAYER) {
+      const btype = bullet.variant.replace("bullet_", "");
+      other.energy -= BULLET_DAMAGE[btype] ?? 1;
+      if (other.energy <= 0) { other.alive = false; if (other.type === TYPE.ENEMY) score += 10; }
+      // Impulso: el bullet ya tiene su masa real desde spawn, resolvemos normal
+      applyImpulse(bullet, other, ox, oy);
+      bullet.alive = false;
+      return;
+    }
+    bullet.alive = false;
+    return;
+  }
+
+  // Enemy contacta player: daÃ±o con cooldown
+  if ((a.type === TYPE.ENEMY && b.type === TYPE.PLAYER) ||
+      (a.type === TYPE.PLAYER && b.type === TYPE.ENEMY)) {
+    const pl = a.type === TYPE.PLAYER ? a : b;
+    if (now - pl.lastHit > HIT_CD_MS) {
+      pl.lastHit = now;
+      pl.energy -= 1;
+      if (pl.energy <= 0) pl.alive = false;
+    }
+  }
+
+  // â”€â”€ Impulso fÃ­sico (todos los pares no-bullet) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  applyImpulse(a, b, ox, oy);
+}
+
+// Impulso de Coulomb + fricciÃ³n tangencial + correcciÃ³n posicional.
+// FunciÃ³n pura: sÃ³lo toca velocidades y posiciones.
+// Recibe ox,oy del broadphase y calcula nx,ny desde las posiciones reales.
+// AsÃ­ el eje siempre apunta de a hacia b, sin importar el orden de llamada.
+function applyImpulse(a, b, ox, oy) {
+  // Eje de menor penetraciÃ³n, direcciÃ³n de aâ†’b
+  let nx = 0, ny = 0;
+  if (ox < oy) nx = b.x > a.x ? 1 : -1;
+  else          ny = b.y > a.y ? 1 : -1;
+
+  const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
+  const vn  = dvx * nx + dvy * ny;
+  if (vn > 0) return;  // ya se estÃ¡n separando
+
+  const invSum = a.invMass + b.invMass;
+  if (invSum === 0) return;  // ambos inamovibles
+
+  a.sleeping = b.sleeping = false;
+  a.sleepN   = b.sleepN   = 0;
+
+  // Impulso normal
+  const rest = Math.min(a.restitution, b.restitution);
+  const j    = -(1 + rest) * vn / invSum;
+  a.vx -= j * nx * a.invMass;  a.vy -= j * ny * a.invMass;
+  b.vx += j * nx * b.invMass;  b.vy += j * ny * b.invMass;
+
+  // Impulso tangencial (fricciÃ³n)
+  const tx = -ny, ty = nx;
+  const vt  = dvx * tx + dvy * ty;
+  const mu  = Math.sqrt(a.friction * b.friction);
+  const jt  = Math.abs(vt) < j * mu ? -vt / invSum : -j * mu * Math.sign(vt);
+  a.vx += jt * tx * a.invMass;  a.vy += jt * ty * a.invMass;
+  b.vx -= jt * tx * b.invMass;  b.vy -= jt * ty * b.invMass;
+
+  // CorrecciÃ³n posicional
+  const corr = Math.max(Math.min(ox, oy) - 0.5, 0) / invSum * 0.4;
+  a.x -= corr * nx * a.invMass;  a.y -= corr * ny * a.invMass;
+  b.x += corr * nx * b.invMass;  b.y += corr * ny * b.invMass;
+}
+
+// ================================================================
+// PHYSICS STEP
+// ================================================================
+function physicsStep(dt, now) {
+  const sw = W(), sh = H();
+
+  // 1. Integrate & boundary
+  for (let i = 0; i < pool.length; i++) {
+    const e = pool[i];
+    if (!e.alive || e.invMass === 0 || e.sleeping) continue;
+
+    e.x += e.vx * dt;
+    e.y += e.vy * dt;
+
+    if (e.type === TYPE.BULLET) {
+      if (e.x < -40 || e.x > sw + 40 || e.y < -40 || e.y > sh + 40) e.alive = false;
+      continue;
+    }
+
+    // Bounce off screen edges
+    if (e.x - e.halfW < 0)    { e.x = e.halfW;       e.vx =  Math.abs(e.vx); }
+    if (e.x + e.halfW > sw)   { e.x = sw - e.halfW;  e.vx = -Math.abs(e.vx); }
+    if (e.y - e.halfH < 0)    { e.y = e.halfH;       e.vy =  Math.abs(e.vy); }
+    if (e.y + e.halfH > sh)   { e.y = sh - e.halfH;  e.vy = -Math.abs(e.vy); }
+
+    // Sleep
+    const v2 = e.vx * e.vx + e.vy * e.vy;
+    if (v2 < SLEEP_THRESH) {
+      if (++e.sleepN > SLEEP_FRAMES) { e.vx = e.vy = 0; e.sleeping = true; }
+    } else { e.sleepN = 0; }
+  }
+
+  // 2. Broad phase: sweep & prune on X
+  const alive = [];
+  for (let i = 0; i < pool.length; i++) if (pool[i].alive) alive.push(pool[i]);
+  alive.sort((a, b) => a.x - a.halfW - (b.x - b.halfW));
+
+  for (let i = 0; i < alive.length; i++) {
+    const a = alive[i];
+    const aRight = a.x + a.halfW;
+    for (let j = i + 1; j < alive.length; j++) {
+      const b = alive[j];
+      if (b.x - b.halfW > aRight) break;
+
+      const ox = (a.halfW + b.halfW) - Math.abs(b.x - a.x);
+      const oy = (a.halfH + b.halfH) - Math.abs(b.y - a.y);
+      if (ox <= 0 || oy <= 0) continue;
+
+      onCollision(a, b, ox, oy, now);
+    }
+  }
+}
+
+
+// ================================================================
+// INPUT
+// ================================================================
+const keys = {};
+const mouse = { x: 0, y: 0, down: false };
+let player = null;
+let lastShot = 0;
+let currentWeapon = "normal"; // "normal" | "heavy" | "laser"
+
+window.addEventListener("keydown", e => {
+  if (e.code === "KeyP") {
+    paused = !paused;
+    elInfo.textContent = paused ? "â¸ PAUSA â€” pulsa P para continuar" : "";
+    return;
+  }
+  if (e.code === "Digit1") { currentWeapon = "normal"; return; }
+  if (e.code === "Digit2") { currentWeapon = "heavy";  return; }
+  if (e.code === "Digit3") { currentWeapon = "laser";  return; }
+  keys[e.code] = true;
+  e.preventDefault();
+});
+window.addEventListener("keyup",     e => { keys[e.code] = false; });
+window.addEventListener("mousemove", e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+window.addEventListener("mousedown", e => { if (e.button === 0) mouse.down = true;  });
+window.addEventListener("mouseup",   e => { if (e.button === 0) mouse.down = false; });
+
+function inputUpdate(now) {
+  if (!player || !player.alive) return;
+
+  let tx = 0, ty = 0;
+  const left  = keys.KeyA || keys.ArrowLeft;
+  const right = keys.KeyD || keys.ArrowRight;
+  const up    = keys.KeyW || keys.ArrowUp;
+  const down  = keys.KeyS || keys.ArrowDown;
+  if (left)  tx -= PLAYER_SPEED;
+  if (right) tx += PLAYER_SPEED;
+  if (up)    ty -= PLAYER_SPEED;
+  if (down)  ty += PLAYER_SPEED;
+
+  if (left || right || up || down) {
+    // Con teclas: acelerar hacia la velocidad objetivo
+    player.vx += (tx - player.vx) * PLAYER_ACCEL;
+    player.vy += (ty - player.vy) * PLAYER_ACCEL;
+  } else {
+    // Sin teclas: inercia â€” el sprite se frena poco a poco
+    player.vx *= PLAYER_DAMPING;
+    player.vy *= PLAYER_DAMPING;
+  }
+  player.sleeping = false;
+  player.sleepN   = 0;
+
+  const weaponCD = currentWeapon === "laser" ? 80 : currentWeapon === "heavy" ? 450 : BULLET_CD_MS;
+  if (mouse.down && now - lastShot >= weaponCD) {
+    lastShot = now;
+    const dx = mouse.x - player.x, dy = mouse.y - player.y;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const nx = dx / len, ny = dy / len;
+    const spd = BULLET_SPEED[currentWeapon] ?? BULLET_SPEED.normal;
+    // Offset: salir desde el borde exterior del jugador + margen de 4px
+    const offset = Math.max(player.halfW, player.halfH) + 4;
+    spawnBullet(player.x + nx * offset, player.y + ny * offset, nx * spd, ny * spd, currentWeapon);
+  }
+}
+
+// ================================================================
+// HUD  (DOM puro â€” fuera del stage PixiJS, sin setChildIndex)
+// ================================================================
+let gameOver = false;
+let paused   = false;
+const elFPS  = document.getElementById("hFPS");
+const elInfo = document.getElementById("hInfo");
+let hudMs = 0;
+
+function hudUpdate() {
+  hudMs += app.ticker.deltaMS;
+  if (hudMs < 600) return;
+  hudMs = 0;
+  elFPS.textContent = "FPS: " + app.ticker.FPS.toFixed(0) + "  objs: " + pool.length;
+  if (gameOver) {
+    elInfo.textContent = "GAME OVER â€” recarga para jugar de nuevo";
+  } else if (player) {
+    const wNames = { normal: "1-Basic", heavy: "2-Heavy", laser: "3-Laser" };
+    const wColors = { normal: "#ffff33", heavy: "#ff8833", laser: "#33ffff" };
+    elInfo.innerHTML = "HP: " + player.energy + "/" + player.maxEnergy +
+      "  score: " + score +
+      '  arma: <span style="color:' + wColors[currentWeapon] + '">' + wNames[currentWeapon] + '</span>' +
+      "   &nbsp; WASD mover · click disparar · 1/2/3 cambiar arma";
+  }
+}
+
+// ================================================================
+// SETUP
+// ================================================================
+// Graphics reutilizable para la lÃ­nea de apuntado
+const aimLine = new PIXI.Graphics();
+app.stage.addChild(aimLine);
+
+function drawAimLine() {
+  aimLine.clear();
+  if (!player || !player.alive || gameOver) return;
+  aimLine.lineStyle(1, 0xffffff, 0.35);
+  aimLine.moveTo(player.x, player.y);
+  aimLine.lineTo(mouse.x, mouse.y);
+  // PequeÃ±o cÃ­rculo en el cursor
+  aimLine.lineStyle(1, 0xffffff, 0.5);
+  aimLine.drawCircle(mouse.x, mouse.y, 4);
+}
+
+function setup() {
+  const sw = W(), sh = H(), WS = 14;
+  // Paredes perimetrales
+  spawnWall(sw / 2,      WS / 2,      sw, WS);   // top
+  spawnWall(sw / 2,      sh - WS / 2, sw, WS);   // bottom
+  spawnWall(WS / 2,      sh / 2,      WS, sh);   // left
+  spawnWall(sw - WS / 2, sh / 2,      WS, sh);   // right
+  // 5 paredes interiores: rejilla 2Ã—3 con jitter para distribuciÃ³n uniforme
+  const cols = 2, rows = 3;
+  const cellW = sw / (cols + 1), cellH = sh / (rows + 1);
+  const wallDefs = [
+    [60, 14], [14, 60], [80, 14], [14, 50], [70, 18],
+  ];
+  let wi = 0;
+  for (let r = 1; r <= rows; r++) {
+    for (let c = 1; c <= cols && wi < 5; c++, wi++) {
+      const cx = cellW * c + (Math.random() - 0.5) * cellW * 0.4;
+      const cy = cellH * r + (Math.random() - 0.5) * cellH * 0.4;
+      const [ww, wh] = wallDefs[wi];
+      spawnWall(cx, cy, ww, wh);
+    }
+  }
+  for (let i = 0; i < NUM_ENEMIES; i++) spawnEnemy();
+  player = spawnPlayer();
+}
+
+// ================================================================
+// GAME LOOP
+// ================================================================
+let prevTime = null;
+
+app.ticker.add(() => {
+  const now = performance.now();
+
+  // Calcular dt propio â€” no depender de ticker.deltaMS que puede ser NaN
+  if (prevTime === null) { prevTime = now; return; }
+  const elapsed = now - prevTime;
+  prevTime = now;
+  const dt = Math.min(elapsed / 16.6667, 3);  // cap a 3Ã— para tabs lentas
+
+  if (!gameOver && !paused) {
+    inputUpdate(now);
+    physicsStep(dt, now);
+    purge();
+    syncGraphics();
+    drawAimLine();
+    if (player && !player.alive) gameOver = true;
+  }
+  hudUpdate();
+});
+
+window.addEventListener("resize", () => {
+  app.renderer.resize(window.innerWidth, window.innerHeight);
+});
+
+setup();
+
+</script>
+</body>
+</html>
