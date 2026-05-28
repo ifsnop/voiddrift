@@ -83,9 +83,13 @@
 const TYPE = { ENEMY:"enemy", PLAYER:"player", WALL:"wall", BULLET:"bullet" };
 
 // --- FASES ---
-const PHASE_DURATION_MS    = 30000;  // duración de cada fase (ms)
+const PHASE_DURATION_MS    = 30000;  // duración por defecto de cada fase (ms)
+const PHASE_DURATION = {           // override por fase (0 = usa default)
+  6: 10000,                        // fase 6 dura sólo 10s antes de pasar a la 7
+};
 const TOTAL_PHASES         = 7;
-const PHASE7_DELAY_MS      = 10000; // ms tras el inicio de fase 7 antes de la oleada
+const PHASE7_DELAY_MS      = 0;     // sin espera — spawn inmediato al inicio de fase 7
+const PHASE7_REPEAT_THRESHOLD = 30; // si quedan ≤ N enemigos vivos, se repite la oleada
 const PHASE7_CORNERS       = 10;    // spawners por esquina
 const PHASE7_SPAWN_INTERVAL = 500;  // ms entre cada spawner
 const PHASE7_CORNER_MARGIN  = 60;   // distancia de la esquina al centro del spawner
@@ -667,7 +671,8 @@ function phaseUpdate(now) {
     phaseStartTime += app.ticker.deltaMS;
     return;
   }
-  const remaining = Math.max(0, PHASE_DURATION_MS - (now - phaseStartTime));
+  const phaseDur  = PHASE_DURATION[currentPhase] ?? PHASE_DURATION_MS;
+  const remaining = Math.max(0, phaseDur - (now - phaseStartTime));
   const secsLeft  = Math.ceil(remaining / 1000);
   elPhaseTimer.textContent = secsLeft;
   elPhaseTimer.style.color = timerColor(secsLeft);
@@ -719,6 +724,20 @@ function phase7Update(now) {
 
   phase7Count++;
   phase7NextSpawn = now + PHASE7_SPAWN_INTERVAL;
+}
+
+function phase7RepeatCheck(now) {
+  if (currentPhase !== 7 || paused || gameOver) return;
+  // Wave is still in progress — don't restart yet
+  if (phase7Count < 4 * PHASE7_CORNERS) return;
+  // Count living enemies
+  const liveEnemies = pool.filter(e => e.alive && e.type === TYPE.ENEMY).length;
+  if (liveEnemies <= PHASE7_REPEAT_THRESHOLD) {
+    // Restart the corner wave
+    phase7Started = false;
+    phase7Count   = 0;
+    phase7NextSpawn = now;
+  }
 }
 
 // ================================================================
@@ -1756,6 +1775,7 @@ window.addEventListener("keydown", e => {
   if (e.code==="Digit2") { if (currentWeapon==="heavy")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="heavy";  weaponSpread=0; } return; }
   if (e.code==="Digit3") { if (currentWeapon==="laser")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="laser";  weaponSpread=0; } return; }
   if (e.code==="Digit4") { autoBeamOn = !autoBeamOn; autoBeamTarget = null; return; }
+  if (e.code==="Digit6") { startPhase(6, performance.now()); return; }
   if (e.code==="Digit7") { startPhase(7, performance.now()); return; }
   if (e.code==="KeyZ") { spawnEnemy("enemy_basic");   return; }
   if (e.code==="KeyX") { spawnEnemy("enemy_heavy");   return; }
@@ -2301,6 +2321,7 @@ app.ticker.add(() => {
 
   phaseUpdate(now);
   phase7Update(now);
+  phase7RepeatCheck(now);
   if (!gameOver && !paused) {
     enemyAI(now);
     emitAllEnemyFx(now);
