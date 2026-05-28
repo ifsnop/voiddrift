@@ -88,7 +88,7 @@ const BLACKHOLE_RADIUS_PER_MASS = 1.5;   // px extra de radio por unidad de masa
 const BLACKHOLE_BASE_FORCE      = 30;    // fuerza de atracción base (moderada, jugador puede escapar)
 const BLACKHOLE_FORCE_PER_MASS  = 0.5;   // fuerza extra por masa absorbida
 const BLACKHOLE_ESCAPE_FRAC     = 0.333; // a esta fracción del radio ya no se puede escapar
-const BLACKHOLE_DRIFT_ACCEL     = 0.006; // aceleración de deriva lenta (sin centro fijo)
+const BLACKHOLE_DRIFT_ACCEL     = 0.018; // aceleración de deriva lenta (sin centro fijo)
 const BLACKHOLE_RING_COUNT      = 5;     // círculos concéntricos visibles
 const BLACKHOLE_SIZE            = 28;    // hitbox (cuadrado)
 const BLACKHOLE_ORBIT_SPEED     = 0.18;  // rad/s para órbita mutua entre 2 blackholes
@@ -97,7 +97,7 @@ const BLACKHOLE_ORBIT_SPEED     = 0.18;  // rad/s para órbita mutua entre 2 bla
 const ENERGY = {
   enemy_basic:1, enemy_heavy:5, enemy_boss:15,
   enemy_spawner:12, enemy_follower:3, enemy_hitter:7,
-  enemy_blackhole: 15*20,
+  enemy_blackhole: 15*10,  // mitad de vida (10x el boss en lugar de 20x)
   player:10, wall:Infinity
 };
 
@@ -643,32 +643,65 @@ function enemyAI(now) {
         e.vx += Math.cos(e._driftAngle) * BLACKHOLE_DRIFT_ACCEL;
         e.vy += Math.sin(e._driftAngle) * BLACKHOLE_DRIFT_ACCEL;
       }
-      e.vx *= 0.98; e.vy *= 0.98;  // amortiguación para velocidad lenta
+      e.vx *= 0.992; e.vy *= 0.992;  // amortiguación más suave → velocidad mayor
       e.sleeping = false; e.sleepN = 0;
 
       // Radio y fuerza crecen con masa absorbida (almacenada en e._massAbsorbed)
       if (!e._massAbsorbed) e._massAbsorbed = 0;
       const bhRadius = BLACKHOLE_BASE_RADIUS + e._massAbsorbed * BLACKHOLE_RADIUS_PER_MASS;
 
-      // Dibujar anillos concéntricos (blackholeGfx es compartido, lo limpiamos una sola vez fuera)
+      // Malla de fondo deformada por la gravedad del blackhole
       if (!e._ringGfx) {
         e._ringGfx = new PIXI.Graphics();
-        app.stage.addChild(e._ringGfx);
+        app.stage.addChildAt(e._ringGfx, 0);  // detrás de todo
       }
       e._ringGfx.clear();
-      for (let ring = 1; ring <= BLACKHOLE_RING_COUNT; ring++) {
-        const rf = ring / BLACKHOLE_RING_COUNT;
-        const rr = bhRadius * rf;
-        const pulse = 0.12 + 0.1 * Math.sin(now / 220 + ring * 1.3);
-        e._ringGfx.lineStyle(1.5, 0xcc00ff, (1 - rf * 0.45) * 0.75);
-        e._ringGfx.drawCircle(e.x, e.y, rr);
-        e._ringGfx.beginFill(0x220033, pulse * (1 - rf * 0.55));
-        e._ringGfx.drawCircle(e.x, e.y, rr);
-        e._ringGfx.endFill();
+      const sw = W(), sh = H();
+      const GRID_STEP = 48;           // separación entre líneas de la malla
+      const WARP_FALLOFF = bhRadius * 2.2;  // hasta dónde llega la deformación visible
+      const MAX_WARP = bhRadius * 0.55;     // desplazamiento máximo de un vértice
+
+      // Función de deformación: empuja vértices hacia el blackhole según distancia
+      const warp = (px, py) => {
+        const dx = e.x - px, dy = e.y - py;
+        const d = Math.sqrt(dx*dx + dy*dy) || 1;
+        if (d >= WARP_FALLOFF) return [px, py];
+        const strength = Math.pow(1 - d / WARP_FALLOFF, 2.2) * MAX_WARP;
+        return [px + (dx/d) * strength, py + (dy/d) * strength];
+      };
+
+      e._ringGfx.lineStyle(1, 0x6600aa, 0.28);
+
+      // Líneas horizontales
+      for (let gy = 0; gy <= sh; gy += GRID_STEP) {
+        let started = false;
+        for (let gx = 0; gx <= sw; gx += GRID_STEP) {
+          const [wx, wy] = warp(gx, gy);
+          if (!started) { e._ringGfx.moveTo(wx, wy); started = true; }
+          else e._ringGfx.lineTo(wx, wy);
+        }
       }
+      // Líneas verticales
+      for (let gx = 0; gx <= sw; gx += GRID_STEP) {
+        let started = false;
+        for (let gy = 0; gy <= sh; gy += GRID_STEP) {
+          const [wx, wy] = warp(gx, gy);
+          if (!started) { e._ringGfx.moveTo(wx, wy); started = true; }
+          else e._ringGfx.lineTo(wx, wy);
+        }
+      }
+
+      // Núcleo: pequeño halo violeta alrededor del sprite
+      e._ringGfx.lineStyle(1.5, 0xcc00ff, 0.55);
+      e._ringGfx.drawCircle(e.x, e.y, (e._visualSize ?? BLACKHOLE_SIZE) * 0.9);
+      // Tamaño visual con interpolación suave hacia _targetSize
+      if (!e._visualSize) e._visualSize = BLACKHOLE_SIZE;
+      if (!e._targetSize) e._targetSize = BLACKHOLE_SIZE;
+      e._visualSize += (e._targetSize - e._visualSize) * 0.03;  // lerp suave
       if (e.gfx) {
-        const sc = 1 + 0.08 * Math.sin(now / 160);
-        e.gfx.scale.set(sc);
+        const baseScale = e._visualSize / BLACKHOLE_SIZE;
+        const pulse = 1 + 0.08 * Math.sin(now / 160);
+        e.gfx.scale.set(baseScale * pulse);
       }
     }
 
@@ -1439,7 +1472,11 @@ function physicsStep(dt, now) {
         const absorbedMass = ENERGY[e.variant] ?? 1;
         bh._massAbsorbed += absorbedMass;
         // Crecer visualmente (solo tamaño visual del núcleo, no afecta hitbox de forma relevante)
-        bh.w = bh.h = BLACKHOLE_SIZE + bh._massAbsorbed * 0.3;
+        // El tamaño real crece inmediatamente para hitbox, pero _targetSize
+        // se interpola suavemente en el AI para el render visual
+        bh._targetSize = BLACKHOLE_SIZE + bh._massAbsorbed * 0.3;
+        if (!bh._visualSize) bh._visualSize = BLACKHOLE_SIZE;
+        bh.w = bh.h = bh._targetSize;
         bh.halfW = bh.halfH = bh.w * 0.5;
         if (e.type === TYPE.PLAYER) {
           e.energy = 0; e.alive = false;
