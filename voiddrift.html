@@ -1858,53 +1858,74 @@ function drawWarpGrid() {
   const sw = W(), sh = H();
   const blackholes = pool.filter(e => e.alive && e.variant === 'enemy_blackhole');
 
-  // Función de deformación acumulada de todos los blackholes activos
+  // Efecto "bola sobre tela":
+  // Cada vértice de la rejilla se hunde en profundidad Z proporcional a 1/(1+d²/R²).
+  // Esa depresión en Z se proyecta en pantalla: el vértice se desplaza radialmente
+  // hacia el blackhole por la tangente del ángulo de inclinación de la tela,
+  // y además se escala la posición proyectada (perspectiva cónica).
+  // El resultado visual es la característica forma de embudo/cuenco.
+  const FABRIC_DEPTH  = 420;   // profundidad máxima del hundimiento (px virtuales de Z)
+  const FABRIC_SPREAD = 1.8;   // cuántos radios de BH abarca la deformación visible
+  const VIEW_DIST     = 900;   // distancia virtual del "ojo" a la tela (perspectiva)
+
   const warp = (px, py) => {
     let wx = px, wy = py;
     for (const bh of blackholes) {
       if (!bh._massAbsorbed) bh._massAbsorbed = 0;
-      const bhRadius = BLACKHOLE_BASE_RADIUS + bh._massAbsorbed * BLACKHOLE_RADIUS_PER_MASS;
-      const WARP_FALLOFF = bhRadius * 3.5;
-      const MAX_WARP = bhRadius * 1.4;
-      const dx = bh.x - wx, dy = bh.y - wy;
-      const d = Math.sqrt(dx*dx + dy*dy) || 1;
-      if (d < WARP_FALLOFF) {
-        const strength = Math.pow(1 - d / WARP_FALLOFF, 1.4) * MAX_WARP;  // curva más suave = efecto más gradual y amplio
-        wx += (dx/d) * strength;
-        wy += (dy/d) * strength;
-      }
+      const R = (BLACKHOLE_BASE_RADIUS + bh._massAbsorbed * BLACKHOLE_RADIUS_PER_MASS) * FABRIC_SPREAD;
+      const dx = px - bh.x, dy = py - bh.y;
+      const d2 = dx*dx + dy*dy;
+      const d  = Math.sqrt(d2) || 0.001;
+      if (d >= R) continue;
+
+      // Depresión en Z: forma de cuenco suave — máxima en el centro, cero en el borde
+      const t  = 1 - d / R;                          // 0 en borde, 1 en centro
+      const dz = FABRIC_DEPTH * t * t * t;           // cúbica → cuenco pronunciado en el centro
+
+      // Proyección perspectiva: el vértice se aleja del "ojo" → parece más pequeño
+      // y se acerca al centro de la depresión
+      const scale = VIEW_DIST / (VIEW_DIST + dz);    // <1 cerca del centro
+
+      // Nuevo punto proyectado: escala alrededor del blackhole
+      wx += (px - bh.x) * (scale - 1);  // mueve hacia bh.x
+      wy += (py - bh.y) * (scale - 1);  // mueve hacia bh.y
     }
     return [wx, wy];
   };
 
-  // Color de la rejilla: violeta tenue si hay blackholes, azul muy oscuro si no
-  const gridAlpha = blackholes.length > 0 ? 0.42 : 0.09;
-  const gridColor = blackholes.length > 0 ? 0x9900dd : 0x1a2244;
+  // Sin blackholes: rejilla muy tenue permanente
+  // Con blackholes: rejilla más visible, tono violeta
+  const hasBH = blackholes.length > 0;
+  const gridAlpha = hasBH ? 0.38 : 0.08;
+  const gridColor = hasBH ? 0xaa44ff : 0x1a2244;
 
-  warpGridGfx.lineStyle(1, gridColor, gridAlpha);
-
-  // Líneas horizontales
-  for (let gy = 0; gy <= sh; gy += GRID_STEP) {
-    let started = false;
-    for (let gx = 0; gx <= sw; gx += GRID_STEP) {
-      const [wx, wy] = warp(gx, gy);
-      if (!started) { warpGridGfx.moveTo(wx, wy); started = true; }
-      else warpGridGfx.lineTo(wx, wy);
+  // Dibujar segmento a segmento para poder variar el alpha con la distancia
+  for (let gy = 0; gy <= sh + GRID_STEP; gy += GRID_STEP) {
+    const row = Math.min(gy, sh);
+    for (let gx = 0; gx < sw; gx += GRID_STEP) {
+      const x0 = gx, x1 = Math.min(gx + GRID_STEP, sw);
+      const [ax, ay] = warp(x0, row);
+      const [bx, by] = warp(x1, row);
+      // Alpha proporcional al desplazamiento — líneas más deformadas son más visibles
+      const def = Math.hypot(ax - x0, ay - row) + Math.hypot(bx - x1, by - row);
+      const extra = hasBH ? Math.min(def / 80, 0.55) : 0;
+      warpGridGfx.lineStyle(1, gridColor, gridAlpha + extra);
+      warpGridGfx.moveTo(ax, ay);
+      warpGridGfx.lineTo(bx, by);
     }
-    // Cerrar hasta el borde derecho
-    const [wx2, wy2] = warp(sw, gy);
-    warpGridGfx.lineTo(wx2, wy2);
   }
-  // Líneas verticales
-  for (let gx = 0; gx <= sw; gx += GRID_STEP) {
-    let started = false;
-    for (let gy = 0; gy <= sh; gy += GRID_STEP) {
-      const [wx, wy] = warp(gx, gy);
-      if (!started) { warpGridGfx.moveTo(wx, wy); started = true; }
-      else warpGridGfx.lineTo(wx, wy);
+  for (let gx = 0; gx <= sw + GRID_STEP; gx += GRID_STEP) {
+    const col = Math.min(gx, sw);
+    for (let gy = 0; gy < sh; gy += GRID_STEP) {
+      const y0 = gy, y1 = Math.min(gy + GRID_STEP, sh);
+      const [ax, ay] = warp(col, y0);
+      const [bx, by] = warp(col, y1);
+      const def = Math.hypot(ax - col, ay - y0) + Math.hypot(bx - col, by - y1);
+      const extra = hasBH ? Math.min(def / 80, 0.55) : 0;
+      warpGridGfx.lineStyle(1, gridColor, gridAlpha + extra);
+      warpGridGfx.moveTo(ax, ay);
+      warpGridGfx.lineTo(bx, by);
     }
-    const [wx2, wy2] = warp(gx, sh);
-    warpGridGfx.lineTo(wx2, wy2);
   }
 }
 
