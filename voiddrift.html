@@ -492,7 +492,7 @@ const shieldHitMap      = new Map(); // enemyId -> lastHitTime // "normal" | "he
 window.addEventListener("keydown", e => {
   if (e.code === "KeyP") {
     paused = !paused;
-    elInfo.textContent = paused ? "[PAUSA] - pulsa P para continuar";
+    elInfo.textContent = paused ? "[PAUSA] - press P to continue" : "";
     return;
   }
   if (e.code === "Digit1") { currentWeapon = "normal"; return; }
