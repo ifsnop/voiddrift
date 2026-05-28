@@ -90,11 +90,11 @@ const HITTER_BULLET_SPEED       = 5;
 const HITTER_BULLET_DAMAGE      = 2;
 
 // --- BLACKHOLE ---
-const BLACKHOLE_BASE_RADIUS     = 100;   // radio inicial de atracción (px)
-const BLACKHOLE_RADIUS_PER_MASS = 1.5;   // px extra de radio por unidad de masa absorbida
-const BLACKHOLE_BASE_FORCE      = 30;    // fuerza de atracción base (moderada, jugador puede escapar)
-const BLACKHOLE_FORCE_PER_MASS  = 0.5;   // fuerza extra por masa absorbida
-const BLACKHOLE_ESCAPE_FRAC     = 0.333; // a esta fracción del radio ya no se puede escapar
+const BLACKHOLE_BASE_RADIUS     = 260;   // radio amplio — efecto se siente desde lejos
+const BLACKHOLE_RADIUS_PER_MASS = 2.0;   // px extra de radio por masa absorbida
+const BLACKHOLE_BASE_FORCE      = 8;     // fuerza baja — jugador puede escapar en toda la zona exterior
+const BLACKHOLE_FORCE_PER_MASS  = 0.15;  // crecimiento de fuerza muy lento
+const BLACKHOLE_ESCAPE_FRAC     = 0.18;  // solo el 18% interior es zona de no-escape
 const BLACKHOLE_DRIFT_ACCEL     = 0.018; // aceleración de deriva lenta (sin centro fijo)
 const BLACKHOLE_RING_COUNT      = 5;     // círculos concéntricos visibles
 const BLACKHOLE_SIZE            = 28;    // hitbox (cuadrado)
@@ -649,29 +649,13 @@ function enemyAI(now) {
         e.gfx.scale.set(sc);
       }
 
-      // Fase de deambulación (4s) → luego perseguir jugador
-      if (!e._spawnTime) e._spawnTime = now;
-      const roaming = (now - e._spawnTime) < 4000;
-      if (roaming) {
-        // Deriva aleatoria durante los primeros 4 segundos
-        if (!e._roamAngle) e._roamAngle = Math.random() * Math.PI * 2;
-        if (!e._roamNext  || now > e._roamNext) {
-          e._roamAngle += (Math.random()-0.5) * 1.5;
-          e._roamNext = now + 600 + Math.random()*600;
-        }
-        e.vx += Math.cos(e._roamAngle) * 0.06;
-        e.vy += Math.sin(e._roamAngle) * 0.06;
-        e.vx *= 0.96; e.vy *= 0.96;
-        e.sleeping = false; e.sleepN = 0;
-      } else {
-        // Perseguir jugador
-        const dx = player.x - e.x, dy = player.y - e.y;
+      // Perseguir jugador siempre desde el spawn
+      { const dx = player.x - e.x, dy = player.y - e.y;
         const dist = Math.sqrt(dx*dx + dy*dy) || 1;
         e.vx += (dx/dist) * 0.12;
         e.vy += (dy/dist) * 0.12;
         e.vx *= 0.94; e.vy *= 0.94;
-        e.sleeping = false; e.sleepN = 0;
-      }
+        e.sleeping = false; e.sleepN = 0; }
     }
 
     // ---- FOLLOWER ----
@@ -1124,7 +1108,7 @@ function updateMissiles(dt, now) {
       spawnSpawnerPulse(m.x, m.y);
       if (e.type===TYPE.ENEMY) {
         e.energy-=m.currentDamage; showEnergyBar(e,now);
-        if (e.energy<=0){e.alive=false;onEnemyDeath(e);score+=10;}
+        if (e.energy<=0){e.alive=false;onEnemyDeath(e, true);}
         const spd=Math.sqrt(m.vx*m.vx+m.vy*m.vy)||1;
         e.vx+=(m.vx/spd)*7*e.invMass; e.vy+=(m.vy/spd)*7*e.invMass;
         e.sleeping=false; e.sleepN=0;
@@ -1303,10 +1287,12 @@ let blackholeSpawnTime = 0;
 // Malla de fondo permanente deformada por blackholes
 const warpGridGfx = new PIXI.Graphics();  // se añade al stage en setup()
 
-function onEnemyDeath(enemy) {
-  const mass = ENERGY[enemy.variant] ?? 1;
-  score += mass;
-  massDestroyed += mass;
+function onEnemyDeath(enemy, playerKill = false) {
+  if (playerKill) {
+    const mass = ENERGY[enemy.variant] ?? 1;
+    score += mass;
+    massDestroyed += mass;
+  }
   if (enemy.variant === 'enemy_boss') {
     for (let i=0;i<4;i++) spawnEnemy('enemy_heavy',enemy.x+(Math.random()-.5)*30,enemy.y+(Math.random()-.5)*30);
   } else if (enemy.variant === 'enemy_heavy') {
@@ -1346,7 +1332,7 @@ function onCollision(a, b, ox, oy, now) {
       }
       if (other.type === TYPE.ENEMY) {
         other.energy -= bullet.currentDamage;
-        if (other.energy <= 0) { other.alive = false; onEnemyDeath(other); }
+        if (other.energy <= 0) { other.alive = false; onEnemyDeath(other, false); }  // bala enemiga — no puntúa
         showEnergyBar(other, now);
         spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, ENEMY_COLOR[other.variant] ?? 0xff3333, 6);
         applyBulletImpulse(bullet, other);
@@ -1369,7 +1355,7 @@ function onCollision(a, b, ox, oy, now) {
     }
     if (other.type === TYPE.ENEMY) {
       other.energy -= bullet.currentDamage;
-      if (other.energy <= 0) { other.alive = false; onEnemyDeath(other); }
+      if (other.energy <= 0) { other.alive = false; onEnemyDeath(other, true); }
       showEnergyBar(other, now);
       spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, ENEMY_COLOR[other.variant] ?? 0xffffff);
       applyBulletImpulse(bullet, other);
@@ -1480,7 +1466,7 @@ function physicsStep(dt, now) {
         if (now-lastSH>SHIELD_HIT_CD) {
           shieldHitMap.set(e.id,now);
           e.energy-=SHIELD_DAMAGE; showEnergyBar(e,now);
-          if (e.energy<=0){e.alive=false;onEnemyDeath(e);}
+          if (e.energy<=0){e.alive=false;onEnemyDeath(e, true);}
         }
       }
     }
@@ -1503,18 +1489,14 @@ function physicsStep(dt, now) {
       const dist = Math.sqrt(dx*dx + dy*dy) || 1;
       if (dist >= bhRadius) continue;
 
-      // Fuerza: lineal con la distancia. En la zona de no-escape la fuerza es mayor.
+      // Fuerza lineal con distancia — suave y escapable en toda la zona exterior
       const inNoEscape = dist < noEscapeR;
-      const strength = inNoEscape
-        ? 1.0                          // zona interior: máxima fuerza
-        : (1 - (dist - noEscapeR) / (bhRadius - noEscapeR)) * 0.35;  // zona exterior: débil
+      // Zona exterior: caída lineal de 1→0. Zona de no-escape: fuerza constante máxima.
+      const strength = inNoEscape ? 1.0 : (1 - dist / bhRadius);
       const acc = bhForce * strength * dt / 16;
 
-      // El jugador puede escapar en la zona exterior reduciendo la aceleración que recibe
-      const effInvMass = (e.type === TYPE.PLAYER && !inNoEscape) ? e.invMass * 0.4 : e.invMass;
-
-      e.vx += (dx / dist) * acc * effInvMass;
-      e.vy += (dy / dist) * acc * effInvMass;
+      e.vx += (dx / dist) * acc * e.invMass;
+      e.vy += (dy / dist) * acc * e.invMass;
       e.sleeping = false; e.sleepN = 0;
 
       // Núcleo: destrucción instantánea
@@ -1523,7 +1505,7 @@ function physicsStep(dt, now) {
           // Bala del jugador: primero aplica daño al blackhole, luego desaparece
           bh.energy -= e.currentDamage;
           showEnergyBar(bh, now);
-          if (bh.energy <= 0) { bh.alive = false; onEnemyDeath(bh); }
+          if (bh.energy <= 0) { bh.alive = false; onEnemyDeath(bh, true); }
           spawnFragments(e.x, e.y, e.vx * 0.2, e.vy * 0.2, 0xcc00ff, 6);
           e.alive = false;
           continue;
@@ -1541,7 +1523,7 @@ function physicsStep(dt, now) {
         if (e.type === TYPE.PLAYER) {
           e.energy = 0; e.alive = false;
         } else {
-          if (e.type === TYPE.ENEMY) { score += 5; }
+          // absorción por blackhole — no puntúa al jugador
           e.alive = false;
         }
         // El blackhole no recibe impulso — masa infinita
