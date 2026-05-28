@@ -290,12 +290,15 @@ function spawnEnemy(variant, x, y) {
   const col = ENEMY_COLOR[variant] ?? 0x888888;
   const sx = (x !== undefined) ? x : (20 + Math.random() * (W() * 0.35));
   const sy = (y !== undefined) ? y : (30 + Math.random() * (H() - 60));
-  return addToPool(makeEntity(
+  const e = addToPool(makeEntity(
     TYPE.ENEMY, variant, sx, sy, ew, eh,
     (Math.random() - 0.3) * 4,
     (Math.random() - 0.5) * 4,
     1, col
   ));
+  // Spawn burst effect
+  spawnBirthEffect(sx, sy, col, Math.max(ew, eh));
+  return e;
 }
 
 function spawnPlayer() {
@@ -706,6 +709,245 @@ function emitAllEnemyFx(now) {
     if (e.alive && e.type === TYPE.ENEMY) emitEnemyFx(e, now);
   }
 }
+
+// ================================================================
+// SPAWN BIRTH EFFECT
+// ================================================================
+const birthEffects = [];
+function spawnBirthEffect(x, y, color, size) {
+  const g = new PIXI.Graphics();
+  app.stage.addChild(g);
+  birthEffects.push({ gfx:g, x, y, color, size, life:400, maxLife:400 });
+}
+function updateBirthEffects() {
+  for (let i = birthEffects.length-1; i >= 0; i--) {
+    const b = birthEffects[i];
+    b.life -= app.ticker.deltaMS;
+    if (b.life <= 0) {
+      app.stage.removeChild(b.gfx); b.gfx.destroy();
+      birthEffects.splice(i, 1); continue;
+    }
+    const t = b.life / b.maxLife;   // 1→0
+    const r = b.size * (1.0 + (1-t) * 2.5);
+    b.gfx.clear();
+    b.gfx.lineStyle(3 * t, b.color, t * 0.9);
+    b.gfx.drawCircle(b.x, b.y, r);
+    b.gfx.beginFill(b.color, t * t * 0.3);
+    b.gfx.drawCircle(b.x, b.y, r * 0.55);
+    b.gfx.endFill();
+    if (t > 0.55) {
+      const arm = r * 0.55 * ((t-0.55)/0.45);
+      b.gfx.lineStyle(2, 0xffffff, ((t-0.55)/0.45) * 0.8);
+      b.gfx.moveTo(b.x-arm, b.y); b.gfx.lineTo(b.x+arm, b.y);
+      b.gfx.moveTo(b.x, b.y-arm); b.gfx.lineTo(b.x, b.y+arm);
+    }
+  }
+}
+
+// ================================================================
+// LOCK-ON & MISSILE SYSTEM
+// ================================================================
+const LOCK_MAX             = 5;
+const MISSILE_DAMAGE       = 8;
+const MISSILE_SPEED        = 4;
+const MISSILE_TURN_RATE    = 0.07;
+const MISSILE_LOOP_FRAMES  = 55;
+const MISSILE_SPLINE_LOOPS = 1.5;
+const MISSILE_SIZE         = 8;
+const MISSILE_COLOR        = 0xff8833;
+
+const lockTargets = [];
+const missiles    = [];
+
+// SVG overlay for lock-on reticles — lives in DOM, not PixiJS world
+const lockSVG = document.createElementNS("http://www.w3.org/2000/svg","svg");
+lockSVG.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:20;";
+document.body.appendChild(lockSVG);
+
+function makeLockReticle(x, y) {
+  const g = document.createElementNS("http://www.w3.org/2000/svg","g");
+  const ring = document.createElementNS("http://www.w3.org/2000/svg","circle");
+  ring.setAttribute("r","18"); ring.setAttribute("fill","none");
+  ring.setAttribute("stroke","#ff4400"); ring.setAttribute("stroke-width","2.5");
+  ring.setAttribute("stroke-dasharray","7 4");
+  g.appendChild(ring);
+  const corners = [[-1,-1],[1,-1],[1,1],[-1,1]];
+  for (const [sx,sy] of corners) {
+    const p = document.createElementNS("http://www.w3.org/2000/svg","path");
+    const bx=sx*14, by=sy*14;
+    p.setAttribute("d",`M${bx},${by-sy*7} L${bx},${by} L${bx-sx*7},${by}`);
+    p.setAttribute("fill","none"); p.setAttribute("stroke","#ff6600"); p.setAttribute("stroke-width","2");
+    g.appendChild(p);
+  }
+  const dot = document.createElementNS("http://www.w3.org/2000/svg","circle");
+  dot.setAttribute("r","3"); dot.setAttribute("fill","#ff4400"); dot.setAttribute("fill-opacity","0.85");
+  g.appendChild(dot);
+  lockSVG.appendChild(g);
+  return g;
+}
+
+function updateLockReticles(now) {
+  for (let i = lockTargets.length-1; i >= 0; i--) {
+    const lt = lockTargets[i];
+    if (!lt.entity || !lt.entity.alive) {
+      lockSVG.removeChild(lt.gfx);
+      lockTargets.splice(i, 1);
+    }
+  }
+  const rot = (now / 700) * (180/Math.PI);
+  for (const lt of lockTargets) {
+    lt.gfx.setAttribute("transform",`translate(${lt.entity.x},${lt.entity.y}) rotate(${rot})`);
+  }
+}
+
+function removeLockFor(entityId) {
+  const idx = lockTargets.findIndex(lt => lt.entity.id === entityId);
+  if (idx >= 0) { lockSVG.removeChild(lockTargets[idx].gfx); lockTargets.splice(idx,1); }
+}
+
+function clearAllLocks() {
+  for (const lt of lockTargets) lockSVG.removeChild(lt.gfx);
+  lockTargets.length = 0;
+}
+
+function addLockTarget() {
+  if (!player || !player.alive) return;
+  if (lockTargets.length >= LOCK_MAX) { clearAllLocks(); return; }
+  const enemies = pool.filter(e => e.alive && e.type === TYPE.ENEMY);
+  if (enemies.length === 0) return;
+  const lockedIds = new Set(lockTargets.map(lt => lt.entity.id));
+  let best = null, bestDist = Infinity;
+  for (const e of enemies) {
+    if (lockedIds.has(e.id)) continue;
+    const dx=e.x-player.x, dy=e.y-player.y;
+    const d=dx*dx+dy*dy;
+    if (d < bestDist) { bestDist=d; best=e; }
+  }
+  if (!best) return;
+  const g = makeLockReticle(best.x, best.y);
+  lockTargets.push({ entity:best, gfx:g });
+}
+
+// Missile exhaust
+const missileExhaust = [];
+function emitMissileExhaust(m) {
+  const g = new PIXI.Graphics();
+  const col = Math.random()>0.5 ? 0xffaa00 : 0xff5500;
+  const sz  = 2 + Math.random()*2.5;
+  g.beginFill(col, 0.9); g.drawCircle(0,0,sz); g.endFill();
+  g.x = m.x - Math.cos(m.angle)*MISSILE_SIZE*0.7 + (Math.random()-0.5)*4;
+  g.y = m.y - Math.sin(m.angle)*MISSILE_SIZE*0.7 + (Math.random()-0.5)*4;
+  app.stage.addChild(g);
+  missileExhaust.push({ gfx:g, life:280, maxLife:280, vx:(Math.random()-0.5)*0.6, vy:(Math.random()-0.5)*0.6 });
+}
+function updateMissileExhaust(dt) {
+  for (let i=missileExhaust.length-1; i>=0; i--) {
+    const p=missileExhaust[i];
+    p.life-=app.ticker.deltaMS;
+    if (p.life<=0) { app.stage.removeChild(p.gfx); p.gfx.destroy(); missileExhaust.splice(i,1); continue; }
+    p.gfx.x+=p.vx*dt; p.gfx.y+=p.vy*dt;
+    const t=p.life/p.maxLife; p.gfx.alpha=t*t; p.gfx.scale.set(t*0.8+0.2);
+  }
+}
+
+function fireMissile() {
+  if (!player || !player.alive || lockTargets.length === 0) return;
+  const activeTgts = new Set(missiles.filter(m=>m.alive).map(m=>m.targetId));
+  if (activeTgts.size >= LOCK_MAX) return;  // max missiles in flight
+  const lock = lockTargets.find(lt => !activeTgts.has(lt.entity.id));
+  if (!lock) return;
+
+  const startAngle = Math.atan2(lock.entity.y-player.y, lock.entity.x-player.x);
+  const g = new PIXI.Graphics();
+  g.beginFill(MISSILE_COLOR);
+  g.drawEllipse(0, 0, MISSILE_SIZE, MISSILE_SIZE*0.42);
+  g.endFill();
+  g.beginFill(0xffffff,0.7);
+  g.drawEllipse(MISSILE_SIZE*0.25, 0, MISSILE_SIZE*0.3, MISSILE_SIZE*0.18);
+  g.endFill();
+  g.x=player.x; g.y=player.y; g.rotation=startAngle;
+  app.stage.addChild(g);
+
+  missiles.push({
+    alive:true, x:player.x, y:player.y,
+    vx:Math.cos(startAngle)*MISSILE_SPEED,
+    vy:Math.sin(startAngle)*MISSILE_SPEED,
+    angle:startAngle,
+    targetId:lock.entity.id,
+    gfx:g,
+    loopFrame:0,
+    loopDir: Math.random()>0.5?1:-1,
+    currentDamage:MISSILE_DAMAGE,
+  });
+}
+
+function updateMissiles(dt, now) {
+  for (let i=missiles.length-1; i>=0; i--) {
+    const m=missiles[i];
+    if (!m.alive) { missiles.splice(i,1); continue; }
+
+    if (Math.random()>0.35) emitMissileExhaust(m);
+
+    const target = pool.find(e=>e.alive && e.id===m.targetId);
+
+    if (m.loopFrame < MISSILE_LOOP_FRAMES) {
+      // Loop/spline phase: curve outward before homing
+      m.loopFrame++;
+      m.angle += m.loopDir * (Math.PI*2*MISSILE_SPLINE_LOOPS) / MISSILE_LOOP_FRAMES;
+      m.vx = Math.cos(m.angle)*MISSILE_SPEED;
+      m.vy = Math.sin(m.angle)*MISSILE_SPEED;
+    } else if (target) {
+      // Homing phase
+      const dx=target.x-m.x, dy=target.y-m.y;
+      const desired=Math.atan2(dy,dx);
+      let diff=desired-m.angle;
+      while(diff>Math.PI)  diff-=Math.PI*2;
+      while(diff<-Math.PI) diff+=Math.PI*2;
+      m.angle+=Math.sign(diff)*Math.min(Math.abs(diff),MISSILE_TURN_RATE);
+      m.vx=Math.cos(m.angle)*MISSILE_SPEED;
+      m.vy=Math.sin(m.angle)*MISSILE_SPEED;
+    }
+    // target dead → fly straight (vx/vy unchanged)
+
+    m.x+=m.vx*dt; m.y+=m.vy*dt;
+    if (m.gfx) { m.gfx.x=m.x; m.gfx.y=m.y; m.gfx.rotation=m.angle; }
+
+    // Out of bounds
+    if (m.x<-60||m.x>W()+60||m.y<-60||m.y>H()+60) {
+      removeLockFor(m.targetId);
+      if (m.gfx) { app.stage.removeChild(m.gfx); m.gfx.destroy(); m.gfx=null; }
+      missiles.splice(i,1); continue;
+    }
+
+    // Collision: missile vs enemies and walls (never player)
+    const mR = MISSILE_SIZE;
+    let hit=false;
+    for (let j=0; j<pool.length; j++) {
+      const e=pool[j];
+      if (!e.alive || e.type===TYPE.PLAYER || e.type===TYPE.BULLET) continue;
+      const dx=Math.abs(m.x-e.x), dy=Math.abs(m.y-e.y);
+      if (dx>mR+e.halfW || dy>mR+e.halfH) continue;
+      // Hit!
+      spawnFragments(m.x, m.y, m.vx*2, m.vy*2, MISSILE_COLOR, 22);
+      spawnSpawnerPulse(m.x, m.y);
+      if (e.type===TYPE.ENEMY) {
+        e.energy-=m.currentDamage; showEnergyBar(e,now);
+        if (e.energy<=0){e.alive=false;onEnemyDeath(e);score+=10;}
+        const spd=Math.sqrt(m.vx*m.vx+m.vy*m.vy)||1;
+        e.vx+=(m.vx/spd)*7*e.invMass; e.vy+=(m.vy/spd)*7*e.invMass;
+        e.sleeping=false; e.sleepN=0;
+      }
+      removeLockFor(m.targetId);
+      hit=true; break;
+    }
+    if (hit) {
+      m.alive=false;
+      if (m.gfx){app.stage.removeChild(m.gfx);m.gfx.destroy();m.gfx=null;}
+      missiles.splice(i,1);
+    }
+  }
+}
+
 const fragments  = [];
 const exhaust    = [];
 let   lastExhaust = 0;
@@ -1049,6 +1291,8 @@ window.addEventListener("keydown", e => {
   if (e.code==="Digit2") { currentWeapon="heavy";  return; }
   if (e.code==="Digit3") { currentWeapon="laser";  return; }
   if (e.code==="Space")  { keys["Space"]=true; return; }
+  if (e.code==="KeyQ") { addLockTarget(); return; }
+  if (e.code==="KeyE") { fireMissile(); return; }
   // Spawn manual de enemigos
   if (e.code==="KeyZ") { spawnEnemy("enemy_basic");   return; }
   if (e.code==="KeyX") { spawnEnemy("enemy_heavy");   return; }
@@ -1077,36 +1321,34 @@ function inputUpdate(now) {
   player.sleeping=false; player.sleepN=0;
 
   // --- SHIELD ---
-  // Reglas:
-  //   - Se puede activar SIEMPRE que shieldUsedMs < SHIELD_MAX_MS (haya carga)
-  //     Y no esté en cooldown por agotamiento completo.
-  //   - Soltar el escudo a mitad NO inicia cooldown; la carga se mantiene
-  //     y se puede volver a activar inmediatamente.
-  //   - El cooldown SOLO se activa cuando la carga se agota completamente
-  //     (shieldUsedMs llega a SHIELD_MAX_MS). Dura SHIELD_COOLDOWN ms.
-  //   - Durante el cooldown el escudo NO puede activarse.
-  //   - Al terminar el cooldown, shieldUsedMs se resetea a 0 (carga completa).
-  const spDown        = keys["Space"];
-  const inCooldown    = now < shieldCooldownUntil;
-  const hasCharge     = shieldUsedMs < SHIELD_MAX_MS;
+  // - Se activa con SPACE siempre que haya carga Y no esté en cooldown (cooldown solo si se agota del todo).
+  // - Soltar el escudo NO inicia cooldown. La carga se mantiene y se recarga pasado un momento.
+  // - La carga se recupera automáticamente cuando el escudo NO está activo y NO está en cooldown,
+  //   a razón de SHIELD_REGEN_MS por ms (inverso de SHIELD_COOLDOWN).
+  // - El cooldown SOLO ocurre si la carga se agota por completo (shieldUsedMs >= SHIELD_MAX_MS).
+  const spDown     = keys["Space"];
+  const inCooldown = now < shieldCooldownUntil;
+  const hasCharge  = shieldUsedMs < SHIELD_MAX_MS;
 
   if (spDown && hasCharge && !inCooldown) {
-    // Activar / mantener escudo
     shieldActive = true;
     shieldUsedMs = Math.min(SHIELD_MAX_MS, shieldUsedMs + app.ticker.deltaMS);
     shieldBarExpiry = now + 3500;
     if (shieldUsedMs >= SHIELD_MAX_MS) {
-      // Carga agotada: desactivar y arrancar cooldown
       shieldActive = false;
       shieldCooldownUntil = now + SHIELD_COOLDOWN;
       shieldBarExpiry = now + SHIELD_COOLDOWN + 500;
     }
   } else {
-    // Tecla no pulsada, sin carga, o en cooldown: desactivar escudo
     shieldActive = false;
-    // Fin de cooldown: restaurar carga
-    if (inCooldown === false && shieldUsedMs >= SHIELD_MAX_MS) {
+    // Fin de cooldown: resetear medidor
+    if (!inCooldown && shieldUsedMs >= SHIELD_MAX_MS) {
       shieldUsedMs = 0;
+    }
+    // Regeneración pasiva: siempre que no esté en cooldown y haya algo gastado
+    if (!inCooldown && shieldUsedMs > 0) {
+      shieldUsedMs = Math.max(0, shieldUsedMs - app.ticker.deltaMS * (SHIELD_MAX_MS / SHIELD_COOLDOWN));
+      shieldBarExpiry = now + 2000;
     }
   }
 
@@ -1330,8 +1572,8 @@ app.ticker.add(() => {
 
   if (currentPhase===0 && !gameOver) startPhase(1, now);
 
+  phaseUpdate(now);
   if (!gameOver && !paused) {
-    phaseUpdate(now);
     enemyAI(now);
     emitAllEnemyFx(now);
     inputUpdate(now);
@@ -1342,6 +1584,10 @@ app.ticker.add(() => {
     updateEnergyBars(now);
     updateFragments(dt);
     updateEnemyParticles(dt);
+    updateBirthEffects();
+    updateMissiles(dt, now);
+    updateMissileExhaust(dt);
+    updateLockReticles(now);
     updatePulses();
     updateImpulseFlashes();
     spawnExhaust(now);
