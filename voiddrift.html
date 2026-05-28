@@ -167,6 +167,10 @@ function spawnBullet(x, y, vx, vy, btype) {
 // FRAGMENTOS DE IMPACTO (no son entidades, igual que las barras)
 // ================================================================
 const fragments = [];  // { gfx, vx, vy, x, y, life, maxLife }
+const exhaust   = [];  // thruster particles, same pool system
+const EXHAUST_DURATION  = 280;  // ms each particle lives
+const EXHAUST_RATE_MS   = 30;   // spawn one particle every N ms
+let   lastExhaust       = 0;
 const FRAG_DURATION = 350; // ms
 const FRAG_COUNT    = 6;   // particulas por impacto
 
@@ -203,6 +207,57 @@ function updateFragments(dt, now) {
     const t = f.life / f.maxLife;  // 1→0
     f.gfx.alpha = t * t;           // fade cuadratico
     f.vx *= 0.88; f.vy *= 0.88;    // rozamiento
+  }
+}
+
+function spawnExhaust(now) {
+  if (!player || !player.alive) return;
+  const spd = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+  if (spd < 0.4) return;  // no thrust if barely moving
+  if (now - lastExhaust < EXHAUST_RATE_MS) return;
+  lastExhaust = now;
+
+  // Emit opposite to velocity (from centre of sprite, pushed back)
+  const nx = player.vx / spd, ny = player.vy / spd;
+  const ox = -nx * (player.halfW + 2), oy = -ny * (player.halfH + 2);
+
+  // 1-3 particles per tick depending on speed
+  const count = spd > 3 ? 3 : spd > 1.5 ? 2 : 1;
+  for (let i = 0; i < count; i++) {
+    const spread = (Math.random() - 0.5) * 1.8;
+    // velocity: backward + spread + slight inherit from ship
+    const evx = -nx * (2 + Math.random() * 2) + ny * spread + player.vx * 0.1;
+    const evy = -ny * (2 + Math.random() * 2) - nx * spread + player.vy * 0.1;
+    const g = new PIXI.Graphics();
+    // Hot core: white/yellow; cooler edge: orange/red
+    const hot = Math.random() > 0.4;
+    const col = hot ? 0xffffff : (Math.random() > 0.5 ? 0xffcc00 : 0xff6600);
+    const sz = 1 + Math.random() * 1.5;
+    g.beginFill(col);
+    g.drawRect(-sz/2, -sz/2, sz, sz);
+    g.endFill();
+    g.x = player.x + ox + (Math.random() - 0.5) * 4;
+    g.y = player.y + oy + (Math.random() - 0.5) * 4;
+    app.stage.addChild(g);
+    exhaust.push({ gfx: g, vx: evx, vy: evy,
+                   life: EXHAUST_DURATION, maxLife: EXHAUST_DURATION });
+  }
+}
+
+function updateExhaust(dt) {
+  for (let i = exhaust.length - 1; i >= 0; i--) {
+    const f = exhaust[i];
+    f.life -= app.ticker.deltaMS;
+    if (f.life <= 0) {
+      app.stage.removeChild(f.gfx); f.gfx.destroy();
+      exhaust.splice(i, 1);
+      continue;
+    }
+    f.gfx.x += f.vx * dt;
+    f.gfx.y += f.vy * dt;
+    const t = f.life / f.maxLife;
+    f.gfx.alpha = t * t;        // fast fade
+    f.vx *= 0.92; f.vy *= 0.92; // drag
   }
 }
 
@@ -265,6 +320,7 @@ function syncGraphics() {
 let score = 0;
 let playerHPBarExpiry       = 0;
 const PLAYER_HP_BAR_DURATION = 3000;
+let shieldBarExpiry         = 0;  // shown when shield used or recharging
 let shieldActive        = false;
 let shieldUsedMs        = 0;       // ms consumed of shield charge
 let shieldCooldownUntil = 0;       // perf.now() when fully recharged
@@ -273,7 +329,7 @@ const shieldHitMap      = new Map(); // enemyId -> lastHitTime
 // Ãšnica funcion de colision: aplica dano de juego e impulso fisico.
 // Recibe el solapamiento ox,oy ya calculado por el broadphase.
 function onCollision(a, b, ox, oy, now) {
-  // â”€â”€ Logica de juego â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Logica de juego
   if (a.type === TYPE.BULLET || b.type === TYPE.BULLET) {
     const bullet = a.type === TYPE.BULLET ? a : b;
     const other  = a.type === TYPE.BULLET ? b : a;
@@ -321,10 +377,11 @@ function onCollision(a, b, ox, oy, now) {
       pl.energy -= ENEMY_DAMAGE[enemy.variant] ?? 1;
       if (pl.energy <= 0) pl.alive = false;
       playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
+      shieldBarExpiry   = now + PLAYER_HP_BAR_DURATION;
     }
   }
 
-  // â”€â”€ Impulso fisico (todos los pares no-bullet) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Impulso fisico (todos los pares no-bullet)
   applyImpulse(a, b, ox, oy);
 }
 
@@ -540,6 +597,7 @@ function inputUpdate(now) {
   if (spDown && shieldAvail > 0 && cdDone) {
     if (!shieldActive) shieldActive = true;
     shieldUsedMs = Math.min(SHIELD_MAX_MS, shieldUsedMs + app.ticker.deltaMS);
+    shieldBarExpiry = now + 3500;  // keep bar visible while active
     if (shieldUsedMs >= SHIELD_MAX_MS) {
       shieldActive = false;
       shieldCooldownUntil = now + SHIELD_COOLDOWN;
@@ -549,6 +607,7 @@ function inputUpdate(now) {
       shieldActive = false;
       const ratio = shieldUsedMs / SHIELD_MAX_MS;
       shieldCooldownUntil = now + ratio * SHIELD_COOLDOWN;
+      shieldBarExpiry = now + SHIELD_COOLDOWN + 500;  // visible for whole recharge
     }
     if (now >= shieldCooldownUntil && shieldUsedMs > 0 && !shieldActive) {
       shieldUsedMs = 0;
@@ -617,28 +676,66 @@ function drawAimLine() {
   aimLine.drawCircle(mouse.x, mouse.y, 4);
 }
 
-// Player HP bar (PixiJS, shown only after taking damage)
-const playerHPBar = new PIXI.Graphics();
-app.stage.addChild(playerHPBar);
+// Player status bars (HP + Shield) - appear above sprite on impact/shield use
+const playerBarsGfx = new PIXI.Graphics();
+app.stage.addChild(playerBarsGfx);
 
-function drawPlayerHPBar(now) {
-  playerHPBar.clear();
-  if (!player || gameOver || now >= playerHPBarExpiry) return;
-  const t = (playerHPBarExpiry - now) / PLAYER_HP_BAR_DURATION;
-  const alpha = t < 0.3 ? t / 0.3 : 1.0;
-  const BAR_W = 80, BAR_H = 7;
+function drawPlayerBars(now) {
+  playerBarsGfx.clear();
+  if (!player || gameOver) return;
+
+  // Unified visibility: show both if either timer is active
+  const hpActive  = now < playerHPBarExpiry;
+  const shActive  = now < shieldBarExpiry;
+  if (!hpActive && !shActive) return;
+
+  // Fade based on whichever has more time left
+  const longestT = Math.max(
+    hpActive ? (playerHPBarExpiry - now) / PLAYER_HP_BAR_DURATION : 0,
+    shActive ? (shieldBarExpiry   - now) / PLAYER_HP_BAR_DURATION : 0
+  );
+  const alpha = longestT < 0.25 ? longestT / 0.25 : 1.0;
+
+  const BAR_W = 80, BAR_H = 6, GAP = 3;
   const bx = player.x - BAR_W / 2;
-  const by = player.y - player.halfH - 14;
-  playerHPBar.beginFill(0x333333, 0.85 * alpha);
-  playerHPBar.drawRect(bx, by, BAR_W, BAR_H);
-  playerHPBar.endFill();
-  const frac = Math.max(0, player.energy / player.maxEnergy);
-  const rv = Math.round(255 * (1 - frac)), gv = Math.round(200 * frac);
-  playerHPBar.beginFill((rv << 16) | (gv << 8), alpha);
-  playerHPBar.drawRect(bx, by, BAR_W * frac, BAR_H);
-  playerHPBar.endFill();
-  playerHPBar.lineStyle(1, 0xffffff, 0.4 * alpha);
-  playerHPBar.drawRect(bx, by, BAR_W, BAR_H);
+  // HP bar on top, shield bar below it, both above sprite
+  const byHP = player.y - player.halfH - 18;
+  const bySH = byHP + BAR_H + GAP;
+
+  // -- HP bar --
+  const hpFrac = Math.max(0, player.energy / player.maxEnergy);
+  playerBarsGfx.beginFill(0x1a0000, 0.75 * alpha);
+  playerBarsGfx.drawRect(bx, byHP, BAR_W, BAR_H);
+  playerBarsGfx.endFill();
+  // bright red->lime green
+  const hpR = Math.round(255 * (1 - hpFrac)), hpG = Math.round(255 * hpFrac);
+  playerBarsGfx.beginFill((hpR << 16) | (hpG << 8), alpha);
+  playerBarsGfx.drawRect(bx, byHP, BAR_W * hpFrac, BAR_H);
+  playerBarsGfx.endFill();
+  playerBarsGfx.lineStyle(1, 0xff6666, 0.6 * alpha);
+  playerBarsGfx.drawRect(bx, byHP, BAR_W, BAR_H);
+
+  // -- Shield bar --
+  // Shows remaining charge (1 = full, 0 = depleted) while active
+  // Shows recharge progress while cooling down
+  let shFrac;
+  if (shieldActive || shieldCooldownUntil <= now) {
+    shFrac = Math.max(0, 1 - shieldUsedMs / SHIELD_MAX_MS);
+  } else {
+    const cdTotal = shieldUsedMs / SHIELD_MAX_MS * SHIELD_COOLDOWN;
+    const cdElapsed = cdTotal - (shieldCooldownUntil - now);
+    shFrac = Math.max(0, Math.min(1, cdElapsed / cdTotal));
+  }
+  playerBarsGfx.lineStyle(0);
+  playerBarsGfx.beginFill(0x001a33, 0.75 * alpha);
+  playerBarsGfx.drawRect(bx, bySH, BAR_W, BAR_H);
+  playerBarsGfx.endFill();
+  // bright cyan
+  playerBarsGfx.beginFill(shieldActive ? 0x00ffff : 0x0088ff, alpha);
+  playerBarsGfx.drawRect(bx, bySH, BAR_W * shFrac, BAR_H);
+  playerBarsGfx.endFill();
+  playerBarsGfx.lineStyle(1, 0x44ccff, 0.6 * alpha);
+  playerBarsGfx.drawRect(bx, bySH, BAR_W, BAR_H);
 }
 // Shield force field visual
 const shieldGfx = new PIXI.Graphics();
@@ -702,9 +799,11 @@ app.ticker.add(() => {
     syncGraphics();
     updateEnergyBars(now);
     updateFragments(dt, now);
+    spawnExhaust(now);
+    updateExhaust(dt);
     drawShield(now);
     drawAimLine();
-    drawPlayerHPBar(now);
+    drawPlayerBars(now);
     if (player && !player.alive) gameOver = true;
   }
   hudUpdate(now);
