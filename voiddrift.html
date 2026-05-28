@@ -112,7 +112,7 @@ const SHIELD_MAX_MS    = 3000;
 const SHIELD_COOLDOWN  = 20000;   // recarga lenta
 const SHIELD_MIN_TO_USE = 200;    // ms mínimos de carga para poder activar
 const SHIELD_RADIUS    = 36;
-const SHIELD_DAMAGE    = 3;
+const SHIELD_DAMAGE    = 9;
 const SHIELD_HIT_CD    = 600;
 
 // --- BALAS del jugador ---
@@ -1302,6 +1302,7 @@ function onCollision(a, b, ox, oy, now) {
 }
 
 function applyBulletImpulse(bullet, other) {
+  if (other.variant === 'enemy_blackhole') return;  // masa infinita, no se mueve
   const speed = Math.sqrt(bullet.vx*bullet.vx + bullet.vy*bullet.vy) || 1;
   const nx = bullet.vx/speed, ny = bullet.vy/speed;
   const dvx = other.vx-bullet.vx, dvy = other.vy-bullet.vy;
@@ -1314,6 +1315,7 @@ function applyBulletImpulse(bullet, other) {
 }
 
 function applyImpulse(a, b, ox, oy) {
+  if (a.variant === 'enemy_blackhole' || b.variant === 'enemy_blackhole') return;
   let nx=0, ny=0;
   if (ox < oy) nx = b.x>a.x ? 1:-1; else ny = b.y>a.y ? 1:-1;
   const dvx=b.vx-a.vx, dvy=b.vy-a.vy, vn=dvx*nx+dvy*ny;
@@ -1424,18 +1426,29 @@ function physicsStep(dt, now) {
 
       // Núcleo: destrucción instantánea
       if (dist < bh.halfW + Math.max(e.halfW, e.halfH)) {
+        if (e.type === TYPE.BULLET && !e.isEnemyBullet) {
+          // Bala del jugador: primero aplica daño al blackhole, luego desaparece
+          bh.energy -= e.currentDamage;
+          showEnergyBar(bh, now);
+          if (bh.energy <= 0) { bh.alive = false; onEnemyDeath(bh); }
+          spawnFragments(e.x, e.y, e.vx * 0.2, e.vy * 0.2, 0xcc00ff, 6);
+          e.alive = false;
+          continue;
+        }
+        // El blackhole absorbe la entidad — su masa infinita no se ve afectada en posición
         const absorbedMass = ENERGY[e.variant] ?? 1;
         bh._massAbsorbed += absorbedMass;
-        // Crecer visualmente
+        // Crecer visualmente (solo tamaño visual del núcleo, no afecta hitbox de forma relevante)
         bh.w = bh.h = BLACKHOLE_SIZE + bh._massAbsorbed * 0.3;
         bh.halfW = bh.halfH = bh.w * 0.5;
         if (e.type === TYPE.PLAYER) {
           e.energy = 0; e.alive = false;
         } else {
-          if (e.type === TYPE.ENEMY) { score += 5; }  // puntos por absorción
+          if (e.type === TYPE.ENEMY) { score += 5; }
           e.alive = false;
         }
-        spawnFragments(e.x, e.y, e.vx * 0.3, e.vy * 0.3, e.color ?? 0xffffff, 8);
+        // El blackhole no recibe impulso — masa infinita
+        spawnFragments(e.x, e.y, 0, 0, e.color ?? 0xffffff, 8);
       }
     }
   }
@@ -1467,7 +1480,7 @@ let gameOver = false, paused = false;
 
 window.addEventListener("keydown", e => {
   if (e.code==="KeyP") { paused=!paused; elInfo.textContent=paused?"[PAUSA] - press P to continue":""; return; }
-  // Spawn y armas: siempre disponibles (incluso tras game over)
+  if (gameOver) return;
   if (e.code==="Digit1") { currentWeapon="normal"; return; }
   if (e.code==="Digit2") { currentWeapon="heavy";  return; }
   if (e.code==="Digit3") { currentWeapon="laser";  return; }
@@ -1478,8 +1491,6 @@ window.addEventListener("keydown", e => {
   if (e.code==="KeyB") { spawnEnemy("enemy_follower");return; }
   if (e.code==="KeyN") { spawnEnemy("enemy_hitter");  return; }
   if (e.code==="KeyM") { spawnEnemy("enemy_blackhole"); return; }
-  // El resto sólo si el juego está activo
-  if (gameOver) return;
   if (e.code==="Space")  { keys["Space"]=true; return; }
   if (e.code==="KeyQ") { addLockTarget(); return; }
   if (e.code==="KeyE") { fireMissile(); return; }
