@@ -84,7 +84,7 @@ const HITTER_BULLET_DAMAGE      = 2;
 // --- ENERGÍA ---
 const ENERGY = {
   enemy_basic:1, enemy_heavy:5, enemy_boss:15,
-  enemy_spawner:12, enemy_follower:8, enemy_hitter:7,
+  enemy_spawner:12, enemy_follower:3, enemy_hitter:7,
   player:10, wall:Infinity
 };
 
@@ -482,6 +482,11 @@ function startPhase(n, now) {
 
 function phaseUpdate(now) {
   if (!phaseActive) return;
+  // Freeze timer while paused: shift phaseStartTime forward each paused frame
+  if (paused) {
+    phaseStartTime += app.ticker.deltaMS;
+    return;
+  }
   const remaining = Math.max(0, PHASE_DURATION_MS - (now - phaseStartTime));
   const secsLeft  = Math.ceil(remaining / 1000);
   elPhaseTimer.textContent = secsLeft;
@@ -590,8 +595,117 @@ function enemyAI(now) {
 }
 
 // ================================================================
-// FRAGMENTOS DE IMPACTO (mejorados)
+// EFECTOS AMBIENTALES POR TIPO DE ENEMIGO
 // ================================================================
+// Cada tipo de enemigo emite partículas ambientales distintas.
+// Se renderizan como PIXI.Graphics temporales igual que exhaust.
+const ENEMY_FX_RATE = {
+  enemy_basic:    400,   // ms entre partículas (más = menos frecuente)
+  enemy_heavy:    220,
+  enemy_boss:      80,
+  enemy_spawner:  150,
+  enemy_follower: 180,
+  enemy_hitter:   200,
+};
+
+const enemyParticles = [];
+
+function emitEnemyFx(e, now) {
+  const rate = ENEMY_FX_RATE[e.variant];
+  if (!rate) return;
+  if (!e._lastFx) e._lastFx = 0;
+  if (now - e._lastFx < rate) return;
+  e._lastFx = now;
+
+  let col, sz, vx, vy, life, shape;
+
+  switch (e.variant) {
+    case 'enemy_basic':
+      // Pequeñas chispas azules que caen
+      col = 0x66aaff; sz = 1.5 + Math.random()*1.5;
+      vx = (Math.random()-0.5)*0.8; vy = 0.3 + Math.random()*0.5;
+      life = 500; shape = 'circle';
+      break;
+
+    case 'enemy_heavy':
+      // Brasas naranja que flotan hacia arriba
+      col = Math.random()>0.5 ? 0xff8800 : 0xffcc00;
+      sz = 2 + Math.random()*2;
+      vx = (Math.random()-0.5)*1.2; vy = -(0.8 + Math.random()*1.2);
+      life = 600; shape = 'circle';
+      break;
+
+    case 'enemy_boss':
+      // Partículas rojas grandes con drift angular
+      col = Math.random()>0.4 ? 0xff2222 : 0xff8844;
+      sz = 3 + Math.random()*3;
+      const ang = Math.random()*Math.PI*2;
+      vx = Math.cos(ang)*(0.5+Math.random()*1.5); vy = Math.sin(ang)*(0.5+Math.random()*1.5);
+      life = 800; shape = Math.random()>0.5 ? 'circle' : 'rect';
+      break;
+
+    case 'enemy_spawner':
+      // Chispas violeta que salen en arco
+      col = Math.random()>0.5 ? 0xcc44ff : 0xff88ff;
+      sz = 1.5 + Math.random()*2;
+      const sa = -Math.PI*0.5 + (Math.random()-0.5)*Math.PI*0.8;
+      vx = Math.cos(sa)*(1+Math.random()*2); vy = Math.sin(sa)*(1+Math.random()*2) - 0.5;
+      life = 700; shape = 'circle';
+      break;
+
+    case 'enemy_follower':
+      // Estela verde tenue que se disipa rápido
+      col = 0x44ff88; sz = 1.5 + Math.random()*2;
+      vx = -e.vx*0.15 + (Math.random()-0.5)*0.5;
+      vy = -e.vy*0.15 + (Math.random()-0.5)*0.5;
+      life = 300; shape = 'circle';
+      break;
+
+    case 'enemy_hitter':
+      // Destellos rojos en forma de cruz que parpadean
+      col = Math.random()>0.5 ? 0xff4466 : 0xffaaaa;
+      sz = 2 + Math.random()*2;
+      vx = (Math.random()-0.5)*0.6; vy = (Math.random()-0.5)*0.6;
+      life = 400; shape = 'rect';
+      break;
+  }
+
+  const g = new PIXI.Graphics();
+  if (shape === 'circle') {
+    g.beginFill(col, 0.85); g.drawCircle(0,0,sz); g.endFill();
+  } else {
+    g.beginFill(col, 0.85); g.drawRect(-sz/2,-sz/2,sz,sz); g.endFill();
+  }
+  // Offset aleatorio desde el centro del sprite
+  g.x = e.x + (Math.random()-0.5)*e.w*0.7;
+  g.y = e.y + (Math.random()-0.5)*e.h*0.7;
+  app.stage.addChild(g);
+  enemyParticles.push({ gfx:g, vx, vy, life, maxLife:life });
+}
+
+function updateEnemyParticles(dt) {
+  for (let i = enemyParticles.length-1; i >= 0; i--) {
+    const p = enemyParticles[i];
+    p.life -= app.ticker.deltaMS;
+    if (p.life <= 0) {
+      app.stage.removeChild(p.gfx); p.gfx.destroy();
+      enemyParticles.splice(i,1); continue;
+    }
+    p.gfx.x += p.vx * dt;
+    p.gfx.y += p.vy * dt;
+    const t = p.life / p.maxLife;
+    p.gfx.alpha = t * t;
+    p.vx *= 0.94; p.vy *= 0.94;
+  }
+}
+
+// Call from enemy AI loop — emit fx for each live enemy each frame
+function emitAllEnemyFx(now) {
+  for (let i=0; i<pool.length; i++) {
+    const e = pool[i];
+    if (e.alive && e.type === TYPE.ENEMY) emitEnemyFx(e, now);
+  }
+}
 const fragments  = [];
 const exhaust    = [];
 let   lastExhaust = 0;
@@ -761,8 +875,14 @@ function onCollision(a, b, ox, oy, now) {
     if (!bullet.alive) return;
 
     if (bullet.isEnemyBullet) {
-      if (other.type === TYPE.WALL)   { bullet.alive = false; return; }
+      if (other.type === TYPE.WALL) { bullet.alive = false; return; }
       if (other.type === TYPE.PLAYER) {
+        // Shield blocks enemy bullets — deflect and destroy
+        if (shieldActive) {
+          spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, 0x88ffff, 8);
+          bullet.alive = false;
+          return;
+        }
         if (now - other.lastHit > HIT_CD_MS) {
           other.lastHit = now;
           other.energy -= bullet.currentDamage;
@@ -798,7 +918,8 @@ function onCollision(a, b, ox, oy, now) {
       (a.type===TYPE.PLAYER && b.type===TYPE.ENEMY)) {
     const pl    = a.type===TYPE.PLAYER ? a : b;
     const enemy = a.type===TYPE.ENEMY  ? a : b;
-    if (now - pl.lastHit > HIT_CD_MS) {
+    // Shield absorbs melee contact too
+    if (!shieldActive && now - pl.lastHit > HIT_CD_MS) {
       pl.lastHit = now;
       pl.energy -= ENEMY_DAMAGE[enemy.variant] ?? 1;
       if (pl.energy <= 0) pl.alive = false;
@@ -864,11 +985,23 @@ function physicsStep(dt, now) {
     if (v2<SLEEP_THRESH) { if(++e.sleepN>SLEEP_FRAMES){e.vx=e.vy=0;e.sleeping=true;} }
     else { e.sleepN=0; }
   }
-  // Shield force field
+  // Shield force field — repels enemies and destroys incoming enemy bullets
   if (player && player.alive && shieldActive) {
     for (let i=0; i<pool.length; i++) {
       const e=pool[i];
-      if (!e.alive||e.type!==TYPE.ENEMY) continue;
+      if (!e.alive) continue;
+
+      // Intercept enemy bullets that enter shield radius
+      if (e.type===TYPE.BULLET && e.isEnemyBullet) {
+        const bdx=e.x-player.x, bdy=e.y-player.y;
+        if (Math.sqrt(bdx*bdx+bdy*bdy) < SHIELD_RADIUS + e.halfW) {
+          spawnFragments(e.x, e.y, e.vx, e.vy, 0x88ffff, 6);
+          e.alive = false;
+        }
+        continue;
+      }
+
+      if (e.type!==TYPE.ENEMY) continue;
       const sdx=e.x-player.x, sdy=e.y-player.y;
       const sdist=Math.sqrt(sdx*sdx+sdy*sdy);
       const minD=SHIELD_RADIUS+Math.max(e.halfW,e.halfH);
@@ -1200,6 +1333,7 @@ app.ticker.add(() => {
   if (!gameOver && !paused) {
     phaseUpdate(now);
     enemyAI(now);
+    emitAllEnemyFx(now);
     inputUpdate(now);
     updateBulletFade();
     physicsStep(dt, now);
@@ -1207,6 +1341,7 @@ app.ticker.add(() => {
     syncGraphics();
     updateEnergyBars(now);
     updateFragments(dt);
+    updateEnemyParticles(dt);
     updatePulses();
     updateImpulseFlashes();
     spawnExhaust(now);
