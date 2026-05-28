@@ -20,22 +20,27 @@
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js"></script>
 <script>
 // ================================================================
-// CONSTANTS â€” edita aquÃ­ para rebalancear el juego
+// CONSTANTS - edita aqui para rebalancear el juego
 // ================================================================
 const TYPE = { ENEMY:"enemy", PLAYER:"player", WALL:"wall", BULLET:"bullet" };
 
 const ENERGY        = { enemy_basic:2, enemy_heavy:5, enemy_boss:15, player:10, wall:Infinity };
-const ENEMY_DAMAGE  = { enemy_basic:1, enemy_heavy:2, enemy_boss:5  };  // daño al jugador por contacto
+const ENEMY_DAMAGE     = { enemy_basic:1, enemy_heavy:2, enemy_boss:5  };
+const SHIELD_MAX_MS    = 3000;   // max shield duration
+const SHIELD_COOLDOWN  = 10000;  // full recharge time
+const SHIELD_RADIUS    = 36;     // force field radius (px)
+const SHIELD_DAMAGE    = 3;      // damage to enemies (same as heavy bullet)
+const SHIELD_HIT_CD    = 600;    // per-enemy hit cooldown (ms)  // dano al jugador por contacto
 const BULLET_DAMAGE = { normal:1, heavy:3, laser:6 };
 const BULLET_SPEED  = { normal:10, heavy:7, laser:18 };
 const BULLET_MASS   = { normal:0.3, heavy:1.5, laser:0.05 };
-const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4   };  // tamaño (px) del sprite del proyectil   // masa del proyectil (afecta al impulso físico)
+const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4   };  // tamano (px) del sprite del proyectil   // masa del proyectil (afecta al impulso fisico)
 const RESTITUTION   = 0.75;
 const FRICTION      = 0.08;
-const SLEEP_THRESH  = 0.003;  // vÂ² mÃ­nimo para estar despierto
+const SLEEP_THRESH  = 0.003;  // vÂ² minimo para estar despierto
 const SLEEP_FRAMES  = 20;
 const PLAYER_SPEED  = 4;
-const PLAYER_ACCEL  = 0.025;  // inercia muy alta: tarda más en alcanzar velocidad objetivo
+const PLAYER_ACCEL  = 0.025;  // inercia muy alta: tarda mas en alcanzar velocidad objetivo
 const PLAYER_DAMPING = 0.965; // rozamiento suave: se frena lentamente sin input
 const BULLET_CD_MS  = 220;
 const HIT_CD_MS     = 1200;
@@ -127,7 +132,7 @@ function spawnWall(x, y, w, h) {
 }
 
 // variant: "enemy_basic" | "enemy_heavy" | "enemy_boss"  (por defecto: aleatorio ponderado)
-// x,y: posición de spawn (por defecto: zona izquierda aleatoria)
+// x,y: posicion de spawn (por defecto: zona izquierda aleatoria)
 function spawnEnemy(variant, x, y) {
   if (!variant) {
     const roll = Math.random();
@@ -169,7 +174,7 @@ function spawnFragments(x, y, bvx, bvy, color, now) {
   for (let i = 0; i < FRAG_COUNT; i++) {
     const angle = Math.random() * Math.PI * 2;
     const spd   = 1.5 + Math.random() * 3;
-    // Sesgar en la dirección de la bala para mayor realismo
+    // Sesgar en la direccion de la bala para mayor realismo
     const fvx   = Math.cos(angle) * spd + bvx * 0.15;
     const fvy   = Math.sin(angle) * spd + bvy * 0.15;
     const g = new PIXI.Graphics();
@@ -196,7 +201,7 @@ function updateFragments(dt, now) {
     f.gfx.x = f.x;
     f.gfx.y = f.y;
     const t = f.life / f.maxLife;  // 1→0
-    f.gfx.alpha = t * t;           // fade cuadrático
+    f.gfx.alpha = t * t;           // fade cuadratico
     f.vx *= 0.88; f.vy *= 0.88;    // rozamiento
   }
 }
@@ -243,7 +248,7 @@ function updateEnergyBars(now) {
 }
 
 // ================================================================
-// SYNC: lÃ³gica â†’ visual  (solo x,y â€” gfx ya existe)
+// SYNC: logica -> visual  (solo x,y - gfx ya existe)
 // ================================================================
 function syncGraphics() {
   for (let i = 0; i < pool.length; i++) {
@@ -256,14 +261,14 @@ function syncGraphics() {
 // COLLISION LOGIC
 // ================================================================
 let score = 0;
-// Barras de energía temporales: Map<entityId, {entity, expireAt, gfx}>
+// Barras de energia temporales: Map<entityId, {entity, expireAt, gfx}>
 const energyBars = new Map();
 const ENERGY_BAR_DURATION = 3000; // ms
 
-// Ãšnica funciÃ³n de colisiÃ³n: aplica daÃ±o de juego e impulso fÃ­sico.
+// Ãšnica funcion de colision: aplica dano de juego e impulso fisico.
 // Recibe el solapamiento ox,oy ya calculado por el broadphase.
 function onCollision(a, b, ox, oy, now) {
-  // â”€â”€ LÃ³gica de juego â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // â”€â”€ Logica de juego â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (a.type === TYPE.BULLET || b.type === TYPE.BULLET) {
     const bullet = a.type === TYPE.BULLET ? a : b;
     const other  = a.type === TYPE.BULLET ? b : a;
@@ -291,8 +296,8 @@ function onCollision(a, b, ox, oy, now) {
       // Fragmentos visuales de impacto
       const fragColor = ENEMY_COLOR[other.variant] ?? 0xffffff;
       spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, fragColor, now);
-      // Impulso: usamos la dirección real de vuelo de la bala como eje,
-      // no el eje AABB mínimo (que puede ser perpendicular al disparo y anular el impulso).
+      // Impulso: usamos la direccion real de vuelo de la bala como eje,
+      // no el eje AABB minimo (que puede ser perpendicular al disparo y anular el impulso).
       applyBulletImpulse(bullet, other);
       bullet.alive = false;
       return;
@@ -301,7 +306,7 @@ function onCollision(a, b, ox, oy, now) {
     return;
   }
 
-  // Enemy contacta player: daÃ±o con cooldown
+  // Enemy contacta player: dano con cooldown
   if ((a.type === TYPE.ENEMY && b.type === TYPE.PLAYER) ||
       (a.type === TYPE.PLAYER && b.type === TYPE.ENEMY)) {
     const pl = a.type === TYPE.PLAYER ? a : b;
@@ -310,14 +315,15 @@ function onCollision(a, b, ox, oy, now) {
       const enemy = a.type === TYPE.ENEMY ? a : b;
       pl.energy -= ENEMY_DAMAGE[enemy.variant] ?? 1;
       if (pl.energy <= 0) pl.alive = false;
+      playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
     }
   }
 
-  // â”€â”€ Impulso fÃ­sico (todos los pares no-bullet) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // â”€â”€ Impulso fisico (todos los pares no-bullet) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   applyImpulse(a, b, ox, oy);
 }
 
-// Impulso específico para bala: usa la dirección de vuelo como eje normal,
+// Impulso especifico para bala: usa la direccion de vuelo como eje normal,
 // garantizando que vn siempre sea negativo (la bala se acerca al objetivo).
 function applyBulletImpulse(bullet, other) {
   const speed = Math.sqrt(bullet.vx * bullet.vx + bullet.vy * bullet.vy) || 1;
@@ -327,7 +333,7 @@ function applyBulletImpulse(bullet, other) {
   // Velocidad relativa proyectada sobre el eje de vuelo
   const dvx = other.vx - bullet.vx, dvy = other.vy - bullet.vy;
   const vn  = dvx * nx + dvy * ny;
-  // vn casi siempre será negativo (bala se acerca); si ya se separan, forzamos mínimo impulso
+  // vn casi siempre sera negativo (bala se acerca); si ya se separan, forzamos minimo impulso
   const vnClamped = Math.min(vn, -speed * 0.5);
 
   const invSum = bullet.invMass + other.invMass;
@@ -343,19 +349,19 @@ function applyBulletImpulse(bullet, other) {
   other.vy += j * ny * other.invMass;
 }
 
-// Impulso de Coulomb + fricciÃ³n tangencial + correcciÃ³n posicional.
-// FunciÃ³n pura: sÃ³lo toca velocidades y posiciones.
+// Impulso de Coulomb + friccion tangencial + correccion posicional.
+// Funcion pura: solo toca velocidades y posiciones.
 // Recibe ox,oy del broadphase y calcula nx,ny desde las posiciones reales.
-// AsÃ­ el eje siempre apunta de a hacia b, sin importar el orden de llamada.
+// Asi el eje siempre apunta de a hacia b, sin importar el orden de llamada.
 function applyImpulse(a, b, ox, oy) {
-  // Eje de menor penetraciÃ³n, direcciÃ³n de aâ†’b
+  // Eje de menor penetracion, direccion de a->b
   let nx = 0, ny = 0;
   if (ox < oy) nx = b.x > a.x ? 1 : -1;
   else          ny = b.y > a.y ? 1 : -1;
 
   const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
   const vn  = dvx * nx + dvy * ny;
-  if (vn > 0) return;  // ya se estÃ¡n separando
+  if (vn > 0) return;  // ya se estan separando
 
   const invSum = a.invMass + b.invMass;
   if (invSum === 0) return;  // ambos inamovibles
@@ -369,7 +375,7 @@ function applyImpulse(a, b, ox, oy) {
   a.vx -= j * nx * a.invMass;  a.vy -= j * ny * a.invMass;
   b.vx += j * nx * b.invMass;  b.vy += j * ny * b.invMass;
 
-  // Impulso tangencial (fricciÃ³n)
+  // Impulso tangencial (friccion)
   const tx = -ny, ty = nx;
   const vt  = dvx * tx + dvy * ty;
   const mu  = Math.sqrt(a.friction * b.friction);
@@ -377,7 +383,7 @@ function applyImpulse(a, b, ox, oy) {
   a.vx += jt * tx * a.invMass;  a.vy += jt * ty * a.invMass;
   b.vx -= jt * tx * b.invMass;  b.vy -= jt * ty * b.invMass;
 
-  // CorrecciÃ³n posicional
+  // Correccion posicional
   const corr = Math.max(Math.min(ox, oy) - 0.5, 0) / invSum * 0.4;
   a.x -= corr * nx * a.invMass;  a.y -= corr * ny * a.invMass;
   b.x += corr * nx * b.invMass;  b.y += corr * ny * b.invMass;
@@ -415,6 +421,39 @@ function physicsStep(dt, now) {
     } else { e.sleepN = 0; }
   }
 
+  // 0. Shield force field
+  if (player && player.alive && shieldActive) {
+    for (let i = 0; i < pool.length; i++) {
+      const e = pool[i];
+      if (!e.alive || e.type !== TYPE.ENEMY) continue;
+      const sdx = e.x - player.x, sdy = e.y - player.y;
+      const sdist = Math.sqrt(sdx*sdx + sdy*sdy);
+      const minD = SHIELD_RADIUS + Math.max(e.halfW, e.halfH);
+      if (sdist < minD && sdist > 0.01) {
+        const snx = sdx/sdist, sny = sdy/sdist;
+        e.vx += snx * 8 * e.invMass;
+        e.vy += sny * 8 * e.invMass;
+        e.x  += snx * (minD - sdist);
+        e.y  += sny * (minD - sdist);
+        e.sleeping = false; e.sleepN = 0;
+        const lastSH = shieldHitMap.get(e.id) ?? 0;
+        if (now - lastSH > SHIELD_HIT_CD) {
+          shieldHitMap.set(e.id, now);
+          e.energy -= SHIELD_DAMAGE;
+          showEnergyBar(e, now);
+          if (e.energy <= 0) {
+            e.alive = false; score += 10;
+            if (e.variant === 'enemy_boss') {
+              for (let _i=0;_i<4;_i++) spawnEnemy('enemy_heavy', e.x+(Math.random()-.5)*30, e.y+(Math.random()-.5)*30);
+            } else if (e.variant === 'enemy_heavy') {
+              for (let _i=0;_i<2;_i++) spawnEnemy('enemy_basic', e.x+(Math.random()-.5)*20, e.y+(Math.random()-.5)*20);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // 2. Broad phase: sweep & prune on X
   const alive = [];
   for (let i = 0; i < pool.length; i++) if (pool[i].alive) alive.push(pool[i]);
@@ -444,17 +483,22 @@ const keys = {};
 const mouse = { x: 0, y: 0, down: false };
 let player = null;
 let lastShot = 0;
-let currentWeapon = "normal"; // "normal" | "heavy" | "laser"
+let currentWeapon = "normal";
+let shieldActive        = false;
+let shieldUsedMs        = 0;      // ms consumed (max = SHIELD_MAX_MS)
+let shieldCooldownUntil = 0;      // timestamp when fully recharged
+const shieldHitMap      = new Map(); // enemyId -> lastHitTime // "normal" | "heavy" | "laser"
 
 window.addEventListener("keydown", e => {
   if (e.code === "KeyP") {
     paused = !paused;
-    elInfo.textContent = paused ? "â¸ PAUSA â€” pulsa P para continuar" : "";
+    elInfo.textContent = paused ? "[PAUSA] - pulsa P para continuar";
     return;
   }
   if (e.code === "Digit1") { currentWeapon = "normal"; return; }
   if (e.code === "Digit2") { currentWeapon = "heavy";  return; }
   if (e.code === "Digit3") { currentWeapon = "laser";  return; }
+  if (e.code === "Space")  { keys["Space"] = true; return; }
   keys[e.code] = true;
   e.preventDefault();
 });
@@ -481,12 +525,34 @@ function inputUpdate(now) {
     player.vx += (tx - player.vx) * PLAYER_ACCEL;
     player.vy += (ty - player.vy) * PLAYER_ACCEL;
   } else {
-    // Sin teclas: inercia â€” el sprite se frena poco a poco
+    // Sin teclas: inercia - el sprite se frena poco a poco
     player.vx *= PLAYER_DAMPING;
     player.vy *= PLAYER_DAMPING;
   }
   player.sleeping = false;
   player.sleepN   = 0;
+
+  // --- SHIELD ---
+  const spDown = keys["Space"];
+  const shieldAvail = SHIELD_MAX_MS - shieldUsedMs;
+  const cdDone = now >= shieldCooldownUntil;
+  if (spDown && shieldAvail > 0 && cdDone) {
+    if (!shieldActive) shieldActive = true;
+    shieldUsedMs = Math.min(SHIELD_MAX_MS, shieldUsedMs + app.ticker.deltaMS);
+    if (shieldUsedMs >= SHIELD_MAX_MS) {
+      shieldActive = false;
+      shieldCooldownUntil = now + SHIELD_COOLDOWN;
+    }
+  } else {
+    if (shieldActive) {
+      shieldActive = false;
+      const ratio = shieldUsedMs / SHIELD_MAX_MS;
+      shieldCooldownUntil = now + ratio * SHIELD_COOLDOWN;
+    }
+    if (now >= shieldCooldownUntil && shieldUsedMs > 0 && !shieldActive) {
+      shieldUsedMs = 0;
+    }
+  }
 
   const weaponCD = currentWeapon === "laser" ? 80 : currentWeapon === "heavy" ? 450 : BULLET_CD_MS;
   if (mouse.down && now - lastShot >= weaponCD) {
@@ -502,7 +568,7 @@ function inputUpdate(now) {
 }
 
 // ================================================================
-// HUD  (DOM puro â€” fuera del stage PixiJS, sin setChildIndex)
+// HUD  (DOM puro - fuera del stage PixiJS, sin setChildIndex)
 // ================================================================
 let gameOver = false;
 let paused   = false;
@@ -510,29 +576,29 @@ const elFPS  = document.getElementById("hFPS");
 const elInfo = document.getElementById("hInfo");
 let hudMs = 0;
 
-function hudUpdate() {
+function hudUpdate(now) {
   hudMs += app.ticker.deltaMS;
   if (hudMs < 600) return;
   hudMs = 0;
   elFPS.textContent = "FPS: " + app.ticker.FPS.toFixed(0) + "  objs: " + pool.length;
   if (gameOver) {
-    elInfo.textContent = "GAME OVER â€” recarga para jugar de nuevo";
+    elInfo.textContent = "GAME OVER - reload to play again";
+  } else if (paused) {
+    return; // do not overwrite pause message
   } else if (player) {
     const wNames = { normal: "1-Basic", heavy: "2-Heavy", laser: "3-Laser" };
     const wColors = { normal: "#ffff33", heavy: "#ff8833", laser: "#33ffff" };
+    const cdLeft = shieldCooldownUntil > now ? ((shieldCooldownUntil - now) / 1000).toFixed(1) : null;
+    const shieldInfo = shieldActive      ? ' <span style="color:#88ffff">[SHIELD ACTIVE]</span>'
+                     : shieldUsedMs === 0 ? ' <span style="color:#88ffff">[SPACE: shield]</span>'
+                     : cdLeft             ? ' <span style="color:#999">shield recharge: ' + cdLeft + 's</span>'
+                     :                     ' <span style="color:#88ffff">[shield ready]</span>';
     elInfo.innerHTML = "score: " + score +
-      '  arma: <span style="color:' + wColors[currentWeapon] + '">' + wNames[currentWeapon] + '</span>' +
-      "   &nbsp; WASD mover · click disparar · 1/2/3 cambiar arma";
+      '  weapon: <span style="color:' + wColors[currentWeapon] + '">' + wNames[currentWeapon] + '</span>' +
+      shieldInfo +
+      "   WASD-click-1/2/3-SPACE";
   }
 }
-
-// ================================================================
-// SETUP
-// ================================================================
-// Graphics reutilizable para la lÃ­nea de apuntado
-const aimLine = new PIXI.Graphics();
-app.stage.addChild(aimLine);
-
 function drawAimLine() {
   aimLine.clear();
   if (!player || !player.alive || gameOver) return;
@@ -544,34 +610,49 @@ function drawAimLine() {
   aimLine.lineStyle(1, 0xffffff, 0.35);
   aimLine.moveTo(player.x, player.y);
   aimLine.lineTo(aimEx, aimEy);
-  // PequeÃ±o cÃ­rculo en el cursor
+  // Pequeno circulo en el cursor
   aimLine.lineStyle(1, 0xffffff, 0.5);
   aimLine.drawCircle(mouse.x, mouse.y, 4);
 }
 
-// Barra de vida del jugador (PixiJS, siempre visible)
+// Player HP bar (PixiJS, shown only after taking damage)
 const playerHPBar = new PIXI.Graphics();
 app.stage.addChild(playerHPBar);
+let playerHPBarExpiry = 0;
+const PLAYER_HP_BAR_DURATION = 3000;
 
-function drawPlayerHPBar() {
+function drawPlayerHPBar(now) {
   playerHPBar.clear();
-  if (!player || gameOver) return;
+  if (!player || gameOver || now >= playerHPBarExpiry) return;
+  const t = (playerHPBarExpiry - now) / PLAYER_HP_BAR_DURATION;
+  const alpha = t < 0.3 ? t / 0.3 : 1.0;
   const BAR_W = 80, BAR_H = 7;
   const bx = player.x - BAR_W / 2;
   const by = player.y - player.halfH - 14;
-  // Fondo
-  playerHPBar.beginFill(0x333333, 0.85);
+  playerHPBar.beginFill(0x333333, 0.85 * alpha);
   playerHPBar.drawRect(bx, by, BAR_W, BAR_H);
   playerHPBar.endFill();
-  // Relleno verde→rojo
   const frac = Math.max(0, player.energy / player.maxEnergy);
-  const r = Math.round(255 * (1 - frac)), gv = Math.round(200 * frac);
-  playerHPBar.beginFill((r << 16) | (gv << 8), 1);
+  const rv = Math.round(255 * (1 - frac)), gv = Math.round(200 * frac);
+  playerHPBar.beginFill((rv << 16) | (gv << 8), alpha);
   playerHPBar.drawRect(bx, by, BAR_W * frac, BAR_H);
   playerHPBar.endFill();
-  // Borde
-  playerHPBar.lineStyle(1, 0xffffff, 0.4);
+  playerHPBar.lineStyle(1, 0xffffff, 0.4 * alpha);
   playerHPBar.drawRect(bx, by, BAR_W, BAR_H);
+}
+// Shield force field visual
+const shieldGfx = new PIXI.Graphics();
+app.stage.addChild(shieldGfx);
+
+function drawShield(now) {
+  shieldGfx.clear();
+  if (!player || !player.alive || !shieldActive) return;
+  const pulse = 0.18 + 0.12 * Math.sin(now / 80);
+  shieldGfx.lineStyle(2, 0x88ffff, 0.85);
+  shieldGfx.drawCircle(player.x, player.y, SHIELD_RADIUS);
+  shieldGfx.beginFill(0x44aaff, pulse);
+  shieldGfx.drawCircle(player.x, player.y, SHIELD_RADIUS);
+  shieldGfx.endFill();
 }
 
 function setup() {
@@ -581,7 +662,7 @@ function setup() {
   spawnWall(sw / 2,      sh - WS / 2, sw, WS);   // bottom
   spawnWall(WS / 2,      sh / 2,      WS, sh);   // left
   spawnWall(sw - WS / 2, sh / 2,      WS, sh);   // right
-  // 5 paredes interiores: rejilla 2Ã—3 con jitter para distribuciÃ³n uniforme
+  // 5 paredes interiores: rejilla 2Ã-3 con jitter para distribucion uniforme
   const cols = 2, rows = 3;
   const cellW = sw / (cols + 1), cellH = sh / (rows + 1);
   const wallDefs = [
@@ -608,11 +689,11 @@ let prevTime = null;
 app.ticker.add(() => {
   const now = performance.now();
 
-  // Calcular dt propio â€” no depender de ticker.deltaMS que puede ser NaN
+  // Calcular dt propio - no depender de ticker.deltaMS que puede ser NaN
   if (prevTime === null) { prevTime = now; return; }
   const elapsed = now - prevTime;
   prevTime = now;
-  const dt = Math.min(elapsed / 16.6667, 3);  // cap a 3Ã— para tabs lentas
+  const dt = Math.min(elapsed / 16.6667, 3);  // cap a 3Ã- para tabs lentas
 
   if (!gameOver && !paused) {
     inputUpdate(now);
@@ -621,11 +702,12 @@ app.ticker.add(() => {
     syncGraphics();
     updateEnergyBars(now);
     updateFragments(dt, now);
+    drawShield(now);
     drawAimLine();
-    drawPlayerHPBar();
+    drawPlayerHPBar(now);
     if (player && !player.alive) gameOver = true;
   }
-  hudUpdate();
+  hudUpdate(now);
 });
 
 window.addEventListener("resize", () => {
