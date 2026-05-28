@@ -2,13 +2,26 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>Game Engine</title>
+  <title>Game Engine - Fases</title>
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
     #hud {
       position: fixed; top: 8px; left: 12px;
       color: #fff; font: 14px monospace;
       pointer-events: none; z-index: 10; line-height: 1.6;
+    }
+    #phaseTimer {
+      position: fixed; top: 8px; right: 18px;
+      color: #fff; font: bold 48px monospace;
+      pointer-events: none; z-index: 10;
+      text-shadow: 0 0 16px #00ffcc, 0 0 4px #fff;
+      letter-spacing: 2px;
+    }
+    #phaseLabel {
+      position: fixed; top: 62px; right: 18px;
+      color: #aaa; font: 13px monospace;
+      pointer-events: none; z-index: 10;
+      text-align: right;
     }
   </style>
 </head>
@@ -17,6 +30,9 @@
   <span id="hFPS">cargando...</span><br>
   <span id="hInfo"></span>
 </div>
+<div id="phaseTimer">--</div>
+<div id="phaseLabel">FASE --</div>
+
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js"></script>
 <script>
 // ================================================================
@@ -24,48 +40,103 @@
 // ================================================================
 const TYPE = { ENEMY:"enemy", PLAYER:"player", WALL:"wall", BULLET:"bullet" };
 
-const ENERGY        = { enemy_basic:2, enemy_heavy:5, enemy_boss:15, player:10, wall:Infinity };
-const ENEMY_DAMAGE     = { enemy_basic:1, enemy_heavy:2, enemy_boss:5  };
-const SHIELD_MAX_MS    = 3000;   // max shield duration
-const SHIELD_COOLDOWN  = 10000;  // full recharge time
-const SHIELD_RADIUS    = 36;     // force field radius (px)
-const SHIELD_DAMAGE    = 3;      // damage to enemies (same as heavy bullet)
-const SHIELD_HIT_CD    = 600;    // per-enemy hit cooldown (ms)  // dano al jugador por contacto
+// --- FASES ---
+const PHASE_DURATION_MS     = 30000;  // duración de cada fase (ms)
+const TOTAL_PHASES          = 4;      // número total de fases
+
+// Enemigos iniciales por fase { variant: cantidad }
+const PHASE_INITIAL_ENEMIES = {
+  1: { enemy_heavy: 5 },
+  2: { enemy_heavy: 5, enemy_boss: 1 },
+  3: { enemy_heavy: 5, enemy_boss: 1, enemy_spawner: 1 },
+  4: { enemy_spawner: 2, enemy_follower: 1 },
+};
+
+// --- SPAWNER ---
+const SPAWNER_SPAWN_INTERVAL_MS = 20000;       // ms entre spawns del spawner
+const SPAWNER_SPAWN_VARIANT     = "enemy_heavy"; // tipo de enemigo que produce
+const SPAWNER_DEATH_RELEASE     = 3;            // heavies que suelta al morir
+
+// --- FOLLOWER ---
+const FOLLOWER_IMPULSE_INTERVAL_MS = 5000;  // ms entre impulsos hacia el player
+const FOLLOWER_IMPULSE_FORCE       = 6;     // intensidad del impulso
+
+// --- ENERGÍA ---
+const ENERGY = {
+  enemy_basic:1, enemy_heavy:5, enemy_boss:15,
+  enemy_spawner:8, enemy_follower:12,
+  player:10, wall:Infinity
+};
+
+// --- DAÑO de enemigos al contacto ---
+const ENEMY_DAMAGE = {
+  enemy_basic:1, enemy_heavy:2, enemy_boss:5,
+  enemy_spawner:1, enemy_follower:3
+};
+
+// --- SHIELD ---
+const SHIELD_MAX_MS    = 3000;
+const SHIELD_COOLDOWN  = 10000;
+const SHIELD_RADIUS    = 36;
+const SHIELD_DAMAGE    = 3;
+const SHIELD_HIT_CD    = 600;
+
+// --- BALAS ---
 const BULLET_DAMAGE = { normal:1, heavy:3, laser:6 };
 const BULLET_SPEED  = { normal:10, heavy:7, laser:18 };
 const BULLET_MASS   = { normal:0.3, heavy:1.5, laser:0.05 };
-const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4   };  // tamano (px) del sprite del proyectil   // masa del proyectil (afecta al impulso fisico)
+const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4 };
+
+// --- FÍSICA ---
 const RESTITUTION   = 0.75;
 const FRICTION      = 0.08;
-const SLEEP_THRESH  = 0.003;  // vÂ² minimo para estar despierto
+const SLEEP_THRESH  = 0.003;
 const SLEEP_FRAMES  = 20;
-const PLAYER_SPEED  = 4;
-const PLAYER_ACCEL  = 0.025;  // inercia muy alta: tarda mas en alcanzar velocidad objetivo
-const PLAYER_DAMPING = 0.965; // rozamiento suave: se frena lentamente sin input
-const BULLET_CD_MS  = 220;
-const HIT_CD_MS     = 1200;
-const NUM_ENEMIES   = 60;
-const VARIANTS      = ["enemy_basic","enemy_basic","enemy_heavy","enemy_boss"];
-const ENEMY_SIZE    = { enemy_basic:[10,10], enemy_heavy:[18,18], enemy_boss:[30,30] };
-const ENEMY_COLOR   = { enemy_basic:0x4488ff, enemy_heavy:0xff8800, enemy_boss:0xff2222 };
 
+// --- JUGADOR ---
+const PLAYER_SPEED   = 4;
+const PLAYER_ACCEL   = 0.025;
+const PLAYER_DAMPING = 0.965;
+const BULLET_CD_MS   = 220;
+const HIT_CD_MS      = 1200;
+
+// --- TAMAÑOS y COLORES de enemigos ---
+const ENEMY_SIZE = {
+  enemy_basic:   [10, 10],
+  enemy_heavy:   [18, 18],
+  enemy_boss:    [30, 30],
+  enemy_spawner: [22, 22],
+  enemy_follower:[16, 16],
+};
+const ENEMY_COLOR = {
+  enemy_basic:   0x4488ff,
+  enemy_heavy:   0xff8800,
+  enemy_boss:    0xff2222,
+  enemy_spawner: 0xaa44ff,
+  enemy_follower:0x44ff88,
+};
 const COLOR = {
   player:0x00ffcc, wall:0x5577aa,
   bullet_normal:0xffff33, bullet_heavy:0xff8833, bullet_laser:0x33ffff,
 };
 
+// --- PARTÍCULAS ---
+const FRAG_DURATION    = 350;
+const FRAG_COUNT       = 6;
+const EXHAUST_DURATION = 280;
+const EXHAUST_RATE_MS  = 30;
+const ENERGY_BAR_DURATION    = 3000;
+const PLAYER_HP_BAR_DURATION = 3000;
 
 // ================================================================
 // PIXI SETUP
 // ================================================================
 PIXI.BaseTexture.defaultOptions.scaleMode = PIXI.SCALE_MODES.NEAREST;
-
 const app = new PIXI.Application({
-  width:           window.innerWidth,
-  height:          window.innerHeight,
+  width: window.innerWidth, height: window.innerHeight,
   backgroundColor: 0x111111,
-  resolution:      window.devicePixelRatio || 1,
-  autoDensity:     true,
+  resolution: window.devicePixelRatio || 1,
+  autoDensity: true,
 });
 document.body.appendChild(app.view);
 
@@ -73,7 +144,6 @@ document.body.appendChild(app.view);
 // ENTITY
 // ================================================================
 let uid = 0;
-
 function makeEntity(type, variant, x, y, w, h, vx, vy, mass, color) {
   return {
     id: uid++, type, variant, alive: true,
@@ -85,8 +155,9 @@ function makeEntity(type, variant, x, y, w, h, vx, vy, mass, color) {
     invMass: (mass === Infinity) ? 0 : 1 / mass,
     restitution: RESTITUTION, friction: FRICTION,
     sleepN: 0, sleeping: false,
-    lastHit: 0,
-    color, gfx: null,
+    lastHit: 0, color, gfx: null,
+    lastSpawn: 0,    // spawner
+    lastImpulse: 0,  // follower
   };
 }
 
@@ -94,17 +165,28 @@ function makeEntity(type, variant, x, y, w, h, vx, vy, mass, color) {
 // POOL
 // ================================================================
 const pool = [];
-
 function addToPool(e) {
-  // Crear Graphics inmediatamente
   const g = new PIXI.Graphics();
   g.beginFill(e.color);
-  g.drawRect(0, 0, e.w, e.h);
+  if (e.variant === 'enemy_spawner') {
+    const hw = e.halfW, hh = e.halfH;
+    g.drawPolygon([hw,0, e.w,hh*0.5, e.w,hh*1.5, hw,e.h, 0,hh*1.5, 0,hh*0.5]);
+  } else if (e.variant === 'enemy_follower') {
+    const hw = e.halfW, hh = e.halfH;
+    g.drawPolygon([hw,0, e.w,hh, hw,e.h, 0,hh]);
+  } else {
+    g.drawRect(0, 0, e.w, e.h);
+  }
   g.endFill();
-  g.pivot.x = e.halfW;
-  g.pivot.y = e.halfH;
-  g.x = e.x;
-  g.y = e.y;
+  if (e.variant === 'enemy_spawner') {
+    g.lineStyle(2, 0xdd88ff, 1);
+    g.drawCircle(e.halfW, e.halfH, e.halfW - 1);
+  } else if (e.variant === 'enemy_follower') {
+    g.lineStyle(2, 0x88ffbb, 1);
+    g.drawCircle(e.halfW, e.halfH, e.halfW - 1);
+  }
+  g.pivot.x = e.halfW; g.pivot.y = e.halfH;
+  g.x = e.x; g.y = e.y;
   app.stage.addChild(g);
   e.gfx = g;
   pool.push(e);
@@ -128,24 +210,17 @@ const W = () => app.screen.width;
 const H = () => app.screen.height;
 
 function spawnWall(x, y, w, h) {
-  return addToPool(makeEntity(TYPE.WALL, "wall", x, y, w, h, 0, 0, Infinity, COLOR.wall));
+  return addToPool(makeEntity(TYPE.WALL,"wall",x,y,w,h,0,0,Infinity,COLOR.wall));
 }
 
-// variant: "enemy_basic" | "enemy_heavy" | "enemy_boss"  (por defecto: aleatorio ponderado)
-// x,y: posicion de spawn (por defecto: zona izquierda aleatoria)
 function spawnEnemy(variant, x, y) {
-  if (!variant) {
-    const roll = Math.random();
-    variant = roll < 0.55 ? 'enemy_basic' : roll < 0.85 ? 'enemy_heavy' : 'enemy_boss';
-  }
-  const [ew, eh] = ENEMY_SIZE[variant];
-  const col = ENEMY_COLOR[variant];
+  if (!variant) variant = 'enemy_basic';
+  const [ew, eh] = ENEMY_SIZE[variant] ?? [12, 12];
+  const col = ENEMY_COLOR[variant] ?? 0x888888;
   const sx = (x !== undefined) ? x : (20 + Math.random() * (W() * 0.28));
   const sy = (y !== undefined) ? y : (20 + Math.random() * (H() - 40));
   return addToPool(makeEntity(
-    TYPE.ENEMY, variant,
-    sx, sy,
-    ew, eh,
+    TYPE.ENEMY, variant, sx, sy, ew, eh,
     (Math.random() - 0.3) * 4,
     (Math.random() - 0.5) * 4,
     1, col
@@ -153,94 +228,182 @@ function spawnEnemy(variant, x, y) {
 }
 
 function spawnPlayer() {
-  return addToPool(makeEntity(TYPE.PLAYER, "player", W() * 0.75, H() * 0.5, 20, 20, 0, 0, 2, COLOR.player));
+  return addToPool(makeEntity(TYPE.PLAYER,"player",W()*0.75,H()*0.5,20,20,0,0,2,COLOR.player));
 }
 
 function spawnBullet(x, y, vx, vy, btype) {
   const col  = COLOR["bullet_" + btype] ?? 0xffff00;
-  const mass = BULLET_MASS[btype] ?? 0.3;  // masa real desde el spawn
-  const bs = BULLET_SIZE[btype] ?? 6;
-  return addToPool(makeEntity(TYPE.BULLET, "bullet_" + btype, x, y, bs, bs, vx, vy, mass, col));
+  const mass = BULLET_MASS[btype] ?? 0.3;
+  const bs   = BULLET_SIZE[btype] ?? 6;
+  return addToPool(makeEntity(TYPE.BULLET,"bullet_"+btype,x,y,bs,bs,vx,vy,mass,col));
 }
 
 // ================================================================
-// FRAGMENTOS DE IMPACTO (no son entidades, igual que las barras)
+// SISTEMA DE FASES
 // ================================================================
-const fragments = [];  // { gfx, vx, vy, x, y, life, maxLife }
-const exhaust   = [];  // thruster particles, same pool system
-const EXHAUST_DURATION  = 280;  // ms each particle lives
-const EXHAUST_RATE_MS   = 30;   // spawn one particle every N ms
-let   lastExhaust       = 0;
-const FRAG_DURATION = 350; // ms
-const FRAG_COUNT    = 6;   // particulas por impacto
+let currentPhase   = 0;
+let phaseStartTime = 0;
+let phaseActive    = false;
 
-function spawnFragments(x, y, bvx, bvy, color, now) {
-  for (let i = 0; i < FRAG_COUNT; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    const spd   = 1.5 + Math.random() * 3;
-    // Sesgar en la direccion de la bala para mayor realismo
-    const fvx   = Math.cos(angle) * spd + bvx * 0.15;
-    const fvy   = Math.sin(angle) * spd + bvy * 0.15;
-    const g = new PIXI.Graphics();
-    g.beginFill(color);
-    g.drawRect(-1.5, -1.5, 3, 3);
-    g.endFill();
-    g.x = x; g.y = y;
-    app.stage.addChild(g);
-    fragments.push({ gfx: g, vx: fvx, vy: fvy, x, y, life: FRAG_DURATION, maxLife: FRAG_DURATION });
+const elPhaseTimer = document.getElementById("phaseTimer");
+const elPhaseLabel = document.getElementById("phaseLabel");
+
+function timerColor(secsLeft) {
+  if (secsLeft > 15) return "#00ffcc";
+  if (secsLeft > 8)  return "#ffcc00";
+  return "#ff4444";
+}
+
+function startPhase(n, now) {
+  currentPhase  = n;
+  phaseStartTime = now;
+  phaseActive   = true;
+
+  // Limpiar enemigos de la fase anterior
+  for (let i = 0; i < pool.length; i++) {
+    if (pool[i].type === TYPE.ENEMY) pool[i].alive = false;
+  }
+
+  // Spawnear configuración de la nueva fase
+  const config = PHASE_INITIAL_ENEMIES[n] ?? {};
+  for (const [variant, count] of Object.entries(config)) {
+    for (let i = 0; i < count; i++) spawnEnemy(variant);
+  }
+
+  elPhaseLabel.textContent = "FASE " + n + " / " + TOTAL_PHASES;
+}
+
+function phaseUpdate(now) {
+  if (!phaseActive) return;
+  const remaining = Math.max(0, PHASE_DURATION_MS - (now - phaseStartTime));
+  const secsLeft  = Math.ceil(remaining / 1000);
+
+  elPhaseTimer.textContent = secsLeft;
+  elPhaseTimer.style.color = timerColor(secsLeft);
+  elPhaseTimer.style.textShadow = `0 0 16px ${timerColor(secsLeft)}, 0 0 4px #fff`;
+
+  if (remaining <= 0) {
+    if (currentPhase < TOTAL_PHASES) {
+      startPhase(currentPhase + 1, now);
+    } else {
+      phaseActive = false;
+      elPhaseTimer.textContent  = "FIN";
+      elPhaseTimer.style.color  = "#ffcc00";
+      elPhaseLabel.textContent  = "¡COMPLETADO!";
+    }
   }
 }
 
-function updateFragments(dt, now) {
+// ================================================================
+// IA DE ENEMIGOS ESPECIALES
+// ================================================================
+function enemyAI(now) {
+  if (!player || !player.alive) return;
+
+  for (let i = 0; i < pool.length; i++) {
+    const e = pool[i];
+    if (!e.alive || e.type !== TYPE.ENEMY) continue;
+
+    // SPAWNER: genera un heavy periódicamente
+    if (e.variant === 'enemy_spawner') {
+      if (now - e.lastSpawn >= SPAWNER_SPAWN_INTERVAL_MS) {
+        e.lastSpawn = now;
+        const angle = Math.random() * Math.PI * 2;
+        const dist  = 30 + Math.random() * 20;
+        const sx = Math.max(20, Math.min(W()-20, e.x + Math.cos(angle) * dist));
+        const sy = Math.max(20, Math.min(H()-20, e.y + Math.sin(angle) * dist));
+        spawnEnemy(SPAWNER_SPAWN_VARIANT, sx, sy);
+      }
+      // Deriva lenta si se queda quieto
+      if (Math.abs(e.vx) < 0.5 && Math.abs(e.vy) < 0.5) {
+        e.vx = (Math.random() - 0.5) * 1.5;
+        e.vy = (Math.random() - 0.5) * 1.5;
+        e.sleeping = false; e.sleepN = 0;
+      }
+    }
+
+    // FOLLOWER: impulso periódico hacia el player
+    if (e.variant === 'enemy_follower') {
+      if (now - e.lastImpulse >= FOLLOWER_IMPULSE_INTERVAL_MS) {
+        e.lastImpulse = now;
+        const dx = player.x - e.x, dy = player.y - e.y;
+        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        e.vx += (dx / dist) * FOLLOWER_IMPULSE_FORCE;
+        e.vy += (dy / dist) * FOLLOWER_IMPULSE_FORCE;
+        e.sleeping = false; e.sleepN = 0;
+        // Flash blanco breve al impulso
+        if (e.gfx) {
+          e.gfx.tint = 0xffffff;
+          setTimeout(() => { if (e.gfx) e.gfx.tint = 0xffffff; }, 120);
+        }
+      }
+      // Pulso de alpha
+      if (e.gfx) e.gfx.alpha = 0.7 + 0.3 * Math.sin(now / 300 + e.id);
+    }
+  }
+}
+
+// ================================================================
+// FRAGMENTOS DE IMPACTO
+// ================================================================
+const fragments = [];
+const exhaust   = [];
+let   lastExhaust = 0;
+
+function spawnFragments(x, y, bvx, bvy, color) {
+  for (let i = 0; i < FRAG_COUNT; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd   = 1.5 + Math.random() * 3;
+    const g = new PIXI.Graphics();
+    g.beginFill(color); g.drawRect(-1.5,-1.5,3,3); g.endFill();
+    g.x = x; g.y = y;
+    app.stage.addChild(g);
+    fragments.push({
+      gfx:g,
+      vx: Math.cos(angle)*spd + bvx*0.15,
+      vy: Math.sin(angle)*spd + bvy*0.15,
+      x, y, life: FRAG_DURATION, maxLife: FRAG_DURATION
+    });
+  }
+}
+
+function updateFragments(dt) {
   for (let i = fragments.length - 1; i >= 0; i--) {
     const f = fragments[i];
     f.life -= app.ticker.deltaMS;
     if (f.life <= 0) {
       app.stage.removeChild(f.gfx); f.gfx.destroy();
-      fragments.splice(i, 1);
-      continue;
+      fragments.splice(i, 1); continue;
     }
-    f.x += f.vx * dt;
-    f.y += f.vy * dt;
-    f.gfx.x = f.x;
-    f.gfx.y = f.y;
-    const t = f.life / f.maxLife;  // 1→0
-    f.gfx.alpha = t * t;           // fade cuadratico
-    f.vx *= 0.88; f.vy *= 0.88;    // rozamiento
+    f.x += f.vx * dt; f.y += f.vy * dt;
+    f.gfx.x = f.x; f.gfx.y = f.y;
+    const t = f.life / f.maxLife;
+    f.gfx.alpha = t * t;
+    f.vx *= 0.88; f.vy *= 0.88;
   }
 }
 
 function spawnExhaust(now) {
   if (!player || !player.alive) return;
-  const spd = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
-  if (spd < 0.4) return;  // no thrust if barely moving
-  if (now - lastExhaust < EXHAUST_RATE_MS) return;
+  const spd = Math.sqrt(player.vx*player.vx + player.vy*player.vy);
+  if (spd < 0.4 || now - lastExhaust < EXHAUST_RATE_MS) return;
   lastExhaust = now;
-
-  // Emit opposite to velocity (from centre of sprite, pushed back)
-  const nx = player.vx / spd, ny = player.vy / spd;
-  const ox = -nx * (player.halfW + 2), oy = -ny * (player.halfH + 2);
-
-  // 1-3 particles per tick depending on speed
+  const nx = player.vx/spd, ny = player.vy/spd;
+  const ox = -nx*(player.halfW+2), oy = -ny*(player.halfH+2);
   const count = spd > 3 ? 3 : spd > 1.5 ? 2 : 1;
   for (let i = 0; i < count; i++) {
-    const spread = (Math.random() - 0.5) * 1.8;
-    // velocity: backward + spread + slight inherit from ship
-    const evx = -nx * (2 + Math.random() * 2) + ny * spread + player.vx * 0.1;
-    const evy = -ny * (2 + Math.random() * 2) - nx * spread + player.vy * 0.1;
+    const spread = (Math.random()-0.5)*1.8;
+    const evx = -nx*(2+Math.random()*2) + ny*spread + player.vx*0.1;
+    const evy = -ny*(2+Math.random()*2) - nx*spread + player.vy*0.1;
     const g = new PIXI.Graphics();
-    // Hot core: white/yellow; cooler edge: orange/red
     const hot = Math.random() > 0.4;
-    const col = hot ? 0xffffff : (Math.random() > 0.5 ? 0xffcc00 : 0xff6600);
-    const sz = 1 + Math.random() * 1.5;
-    g.beginFill(col);
-    g.drawRect(-sz/2, -sz/2, sz, sz);
-    g.endFill();
-    g.x = player.x + ox + (Math.random() - 0.5) * 4;
-    g.y = player.y + oy + (Math.random() - 0.5) * 4;
+    const col = hot ? 0xffffff : (Math.random()>0.5 ? 0xffcc00 : 0xff6600);
+    const sz = 1 + Math.random()*1.5;
+    g.beginFill(col); g.drawRect(-sz/2,-sz/2,sz,sz); g.endFill();
+    g.x = player.x + ox + (Math.random()-0.5)*4;
+    g.y = player.y + oy + (Math.random()-0.5)*4;
     app.stage.addChild(g);
-    exhaust.push({ gfx: g, vx: evx, vy: evy,
-                   life: EXHAUST_DURATION, maxLife: EXHAUST_DURATION });
+    exhaust.push({ gfx:g, vx:evx, vy:evy, life:EXHAUST_DURATION, maxLife:EXHAUST_DURATION });
   }
 }
 
@@ -250,22 +413,19 @@ function updateExhaust(dt) {
     f.life -= app.ticker.deltaMS;
     if (f.life <= 0) {
       app.stage.removeChild(f.gfx); f.gfx.destroy();
-      exhaust.splice(i, 1);
-      continue;
+      exhaust.splice(i, 1); continue;
     }
-    f.gfx.x += f.vx * dt;
-    f.gfx.y += f.vy * dt;
+    f.gfx.x += f.vx*dt; f.gfx.y += f.vy*dt;
     const t = f.life / f.maxLife;
-    f.gfx.alpha = t * t;        // fast fade
-    f.vx *= 0.92; f.vy *= 0.92; // drag
+    f.gfx.alpha = t * t;
+    f.vx *= 0.92; f.vy *= 0.92;
   }
 }
 
 // ================================================================
 // ENERGY BARS
 // ================================================================
-const energyBars = new Map();  // Map<entityId, {entity, expireAt, gfx}>
-const ENERGY_BAR_DURATION = 3000; // ms
+const energyBars = new Map();
 const BAR_W = 32, BAR_H = 4, BAR_YOFF = 8;
 
 function showEnergyBar(entity, now) {
@@ -273,7 +433,7 @@ function showEnergyBar(entity, now) {
   if (!bar) {
     const g = new PIXI.Graphics();
     app.stage.addChild(g);
-    bar = { entity, gfx: g };
+    bar = { entity, gfx:g };
     energyBars.set(entity.id, bar);
   }
   bar.expireAt = now + ENERGY_BAR_DURATION;
@@ -283,29 +443,23 @@ function updateEnergyBars(now) {
   for (const [id, bar] of energyBars) {
     const e = bar.entity;
     if (!e.alive || now >= bar.expireAt) {
-      app.stage.removeChild(bar.gfx);
-      bar.gfx.destroy();
-      energyBars.delete(id);
-      continue;
+      app.stage.removeChild(bar.gfx); bar.gfx.destroy();
+      energyBars.delete(id); continue;
     }
-    const frac = Math.max(0, e.energy / e.maxEnergy);
+    const frac     = Math.max(0, e.energy / e.maxEnergy);
     const timeLeft = (bar.expireAt - now) / ENERGY_BAR_DURATION;
-    const alpha = timeLeft < 0.3 ? timeLeft / 0.3 : 1.0;
-    const g = bar.gfx;
-    g.clear();
-    g.beginFill(0x222222, 0.7 * alpha);
-    g.drawRect(e.x - BAR_W / 2, e.y + e.halfH + BAR_YOFF, BAR_W, BAR_H);
-    g.endFill();
-    const r = Math.round(255 * (1 - frac)), gv = Math.round(200 * frac);
-    const barColor = (r << 16) | (gv << 8);
-    g.beginFill(barColor, alpha);
-    g.drawRect(e.x - BAR_W / 2, e.y + e.halfH + BAR_YOFF, BAR_W * frac, BAR_H);
-    g.endFill();
+    const alpha    = timeLeft < 0.3 ? timeLeft / 0.3 : 1.0;
+    const g = bar.gfx; g.clear();
+    g.beginFill(0x222222, 0.7*alpha);
+    g.drawRect(e.x-BAR_W/2, e.y+e.halfH+BAR_YOFF, BAR_W, BAR_H); g.endFill();
+    const r = Math.round(255*(1-frac)), gv = Math.round(200*frac);
+    g.beginFill((r<<16)|(gv<<8), alpha);
+    g.drawRect(e.x-BAR_W/2, e.y+e.halfH+BAR_YOFF, BAR_W*frac, BAR_H); g.endFill();
   }
 }
 
 // ================================================================
-// SYNC: logica -> visual  (solo x,y - gfx ya existe)
+// SYNC
 // ================================================================
 function syncGraphics() {
   for (let i = 0; i < pool.length; i++) {
@@ -318,137 +472,89 @@ function syncGraphics() {
 // COLLISION LOGIC
 // ================================================================
 let score = 0;
-let playerHPBarExpiry       = 0;
-const PLAYER_HP_BAR_DURATION = 3000;
-let shieldBarExpiry         = 0;  // shown when shield used or recharging
-let shieldActive        = false;
-let shieldUsedMs        = 0;       // ms consumed of shield charge
-let shieldCooldownUntil = 0;       // perf.now() when fully recharged
-const shieldHitMap      = new Map(); // enemyId -> lastHitTime
+let playerHPBarExpiry = 0;
+let shieldBarExpiry   = 0;
+let shieldActive      = false;
+let shieldUsedMs      = 0;
+let shieldCooldownUntil = 0;
+const shieldHitMap    = new Map();
 
-// Ãšnica funcion de colision: aplica dano de juego e impulso fisico.
-// Recibe el solapamiento ox,oy ya calculado por el broadphase.
-function onCollision(a, b, ox, oy, now) {
-  // Logica de juego
-  if (a.type === TYPE.BULLET || b.type === TYPE.BULLET) {
-    const bullet = a.type === TYPE.BULLET ? a : b;
-    const other  = a.type === TYPE.BULLET ? b : a;
-    if (!bullet.alive) return;
-
-    if (other.type === TYPE.WALL) {
-      bullet.alive = false;
-      return;  // paredes inamovibles: sin impulso
-    }
-    if (other.type === TYPE.ENEMY) {
-      const btype = bullet.variant.replace("bullet_", "");
-      other.energy -= BULLET_DAMAGE[btype] ?? 1;
-      if (other.energy <= 0) {
-        other.alive = false;
-        if (other.type === TYPE.ENEMY) {
-          score += 10;
-          if (other.variant === 'enemy_boss') {
-            for (let _i = 0; _i < 4; _i++) spawnEnemy('enemy_heavy', other.x + (Math.random()-0.5)*30, other.y + (Math.random()-0.5)*30);
-          } else if (other.variant === 'enemy_heavy') {
-            for (let _i = 0; _i < 2; _i++) spawnEnemy('enemy_basic', other.x + (Math.random()-0.5)*20, other.y + (Math.random()-0.5)*20);
-          }
-        }
-      }
-      if (other.type === TYPE.ENEMY) showEnergyBar(other, now);
-      // Fragmentos visuales de impacto
-      const fragColor = ENEMY_COLOR[other.variant] ?? 0xffffff;
-      spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, fragColor, now);
-      // Impulso: usamos la direccion real de vuelo de la bala como eje,
-      // no el eje AABB minimo (que puede ser perpendicular al disparo y anular el impulso).
-      applyBulletImpulse(bullet, other);
-      bullet.alive = false;
-      return;
-    }
-    bullet.alive = false;
-    return;
+function onEnemyDeath(enemy) {
+  score += 10;
+  if (enemy.variant === 'enemy_boss') {
+    for (let i=0;i<4;i++) spawnEnemy('enemy_heavy', enemy.x+(Math.random()-.5)*30, enemy.y+(Math.random()-.5)*30);
+  } else if (enemy.variant === 'enemy_heavy') {
+    for (let i=0;i<2;i++) spawnEnemy('enemy_basic', enemy.x+(Math.random()-.5)*20, enemy.y+(Math.random()-.5)*20);
+  } else if (enemy.variant === 'enemy_spawner') {
+    for (let i=0;i<SPAWNER_DEATH_RELEASE;i++) spawnEnemy('enemy_heavy', enemy.x+(Math.random()-.5)*40, enemy.y+(Math.random()-.5)*40);
   }
+}
 
-  // Enemy contacta player: dano con cooldown
-  if ((a.type === TYPE.ENEMY && b.type === TYPE.PLAYER) ||
-      (a.type === TYPE.PLAYER && b.type === TYPE.ENEMY)) {
-    const pl = a.type === TYPE.PLAYER ? a : b;
+function onCollision(a, b, ox, oy, now) {
+  if (a.type === TYPE.BULLET || b.type === TYPE.BULLET) {
+    const bullet = a.type===TYPE.BULLET ? a : b;
+    const other  = a.type===TYPE.BULLET ? b : a;
+    if (!bullet.alive) return;
+    if (other.type === TYPE.WALL) { bullet.alive = false; return; }
+    if (other.type === TYPE.ENEMY) {
+      const btype = bullet.variant.replace("bullet_","");
+      other.energy -= BULLET_DAMAGE[btype] ?? 1;
+      if (other.energy <= 0) { other.alive = false; onEnemyDeath(other); }
+      showEnergyBar(other, now);
+      spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, ENEMY_COLOR[other.variant] ?? 0xffffff);
+      applyBulletImpulse(bullet, other);
+      bullet.alive = false; return;
+    }
+    bullet.alive = false; return;
+  }
+  if ((a.type===TYPE.ENEMY && b.type===TYPE.PLAYER) ||
+      (a.type===TYPE.PLAYER && b.type===TYPE.ENEMY)) {
+    const pl    = a.type===TYPE.PLAYER ? a : b;
+    const enemy = a.type===TYPE.ENEMY  ? a : b;
     if (now - pl.lastHit > HIT_CD_MS) {
       pl.lastHit = now;
-      const enemy = a.type === TYPE.ENEMY ? a : b;
       pl.energy -= ENEMY_DAMAGE[enemy.variant] ?? 1;
       if (pl.energy <= 0) pl.alive = false;
       playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
       shieldBarExpiry   = now + PLAYER_HP_BAR_DURATION;
     }
   }
-
-  // Impulso fisico (todos los pares no-bullet)
   applyImpulse(a, b, ox, oy);
 }
 
-// Impulso especifico para bala: usa la direccion de vuelo como eje normal,
-// garantizando que vn siempre sea negativo (la bala se acerca al objetivo).
 function applyBulletImpulse(bullet, other) {
-  const speed = Math.sqrt(bullet.vx * bullet.vx + bullet.vy * bullet.vy) || 1;
-  const nx = bullet.vx / speed;
-  const ny = bullet.vy / speed;
-
-  // Velocidad relativa proyectada sobre el eje de vuelo
-  const dvx = other.vx - bullet.vx, dvy = other.vy - bullet.vy;
-  const vn  = dvx * nx + dvy * ny;
-  // vn casi siempre sera negativo (bala se acerca); si ya se separan, forzamos minimo impulso
-  const vnClamped = Math.min(vn, -speed * 0.5);
-
+  const speed = Math.sqrt(bullet.vx*bullet.vx + bullet.vy*bullet.vy) || 1;
+  const nx = bullet.vx/speed, ny = bullet.vy/speed;
+  const dvx = other.vx-bullet.vx, dvy = other.vy-bullet.vy;
+  const vn  = Math.min(dvx*nx + dvy*ny, -speed*0.5);
   const invSum = bullet.invMass + other.invMass;
   if (invSum === 0) return;
-
-  other.sleeping = false;
-  other.sleepN   = 0;
-
-  const rest = Math.min(bullet.restitution, other.restitution);
-  const j    = -(1 + rest) * vnClamped / invSum;
-  // Solo movemos el objetivo (la bala muere igual)
-  other.vx += j * nx * other.invMass;
-  other.vy += j * ny * other.invMass;
+  other.sleeping = false; other.sleepN = 0;
+  const j = -(1 + Math.min(bullet.restitution, other.restitution)) * vn / invSum;
+  other.vx += j*nx*other.invMass; other.vy += j*ny*other.invMass;
 }
 
-// Impulso de Coulomb + friccion tangencial + correccion posicional.
-// Funcion pura: solo toca velocidades y posiciones.
-// Recibe ox,oy del broadphase y calcula nx,ny desde las posiciones reales.
-// Asi el eje siempre apunta de a hacia b, sin importar el orden de llamada.
 function applyImpulse(a, b, ox, oy) {
-  // Eje de menor penetracion, direccion de a->b
   let nx = 0, ny = 0;
-  if (ox < oy) nx = b.x > a.x ? 1 : -1;
-  else          ny = b.y > a.y ? 1 : -1;
-
-  const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
-  const vn  = dvx * nx + dvy * ny;
-  if (vn > 0) return;  // ya se estan separando
-
+  if (ox < oy) nx = b.x>a.x ? 1 : -1; else ny = b.y>a.y ? 1 : -1;
+  const dvx = b.vx-a.vx, dvy = b.vy-a.vy;
+  const vn  = dvx*nx + dvy*ny;
+  if (vn > 0) return;
   const invSum = a.invMass + b.invMass;
-  if (invSum === 0) return;  // ambos inamovibles
-
-  a.sleeping = b.sleeping = false;
-  a.sleepN   = b.sleepN   = 0;
-
-  // Impulso normal
+  if (invSum === 0) return;
+  a.sleeping = b.sleeping = false; a.sleepN = b.sleepN = 0;
   const rest = Math.min(a.restitution, b.restitution);
-  const j    = -(1 + rest) * vn / invSum;
-  a.vx -= j * nx * a.invMass;  a.vy -= j * ny * a.invMass;
-  b.vx += j * nx * b.invMass;  b.vy += j * ny * b.invMass;
-
-  // Impulso tangencial (friccion)
-  const tx = -ny, ty = nx;
-  const vt  = dvx * tx + dvy * ty;
-  const mu  = Math.sqrt(a.friction * b.friction);
-  const jt  = Math.abs(vt) < j * mu ? -vt / invSum : -j * mu * Math.sign(vt);
-  a.vx += jt * tx * a.invMass;  a.vy += jt * ty * a.invMass;
-  b.vx -= jt * tx * b.invMass;  b.vy -= jt * ty * b.invMass;
-
-  // Correccion posicional
-  const corr = Math.max(Math.min(ox, oy) - 0.5, 0) / invSum * 0.4;
-  a.x -= corr * nx * a.invMass;  a.y -= corr * ny * a.invMass;
-  b.x += corr * nx * b.invMass;  b.y += corr * ny * b.invMass;
+  const j    = -(1+rest)*vn/invSum;
+  a.vx -= j*nx*a.invMass; a.vy -= j*ny*a.invMass;
+  b.vx += j*nx*b.invMass; b.vy += j*ny*b.invMass;
+  const tx = -ny, ty = nx, vt = dvx*tx + dvy*ty;
+  const mu = Math.sqrt(a.friction*b.friction);
+  const jt = Math.abs(vt) < j*mu ? -vt/invSum : -j*mu*Math.sign(vt);
+  a.vx += jt*tx*a.invMass; a.vy += jt*ty*a.invMass;
+  b.vx -= jt*tx*b.invMass; b.vy -= jt*ty*b.invMass;
+  const corr = Math.max(Math.min(ox,oy)-0.5, 0)/invSum*0.4;
+  a.x -= corr*nx*a.invMass; a.y -= corr*ny*a.invMass;
+  b.x += corr*nx*b.invMass; b.y += corr*ny*b.invMass;
 }
 
 // ================================================================
@@ -456,325 +562,222 @@ function applyImpulse(a, b, ox, oy) {
 // ================================================================
 function physicsStep(dt, now) {
   const sw = W(), sh = H();
-
-  // 1. Integrate & boundary
   for (let i = 0; i < pool.length; i++) {
     const e = pool[i];
-    if (!e.alive || e.invMass === 0 || e.sleeping) continue;
-
-    e.x += e.vx * dt;
-    e.y += e.vy * dt;
-
+    if (!e.alive || e.invMass===0 || e.sleeping) continue;
+    e.x += e.vx*dt; e.y += e.vy*dt;
     if (e.type === TYPE.BULLET) {
-      if (e.x < -40 || e.x > sw + 40 || e.y < -40 || e.y > sh + 40) e.alive = false;
+      if (e.x<-40||e.x>sw+40||e.y<-40||e.y>sh+40) e.alive = false;
       continue;
     }
-
-    // Bounce off screen edges
-    if (e.x - e.halfW < 0)    { e.x = e.halfW;       e.vx =  Math.abs(e.vx); }
-    if (e.x + e.halfW > sw)   { e.x = sw - e.halfW;  e.vx = -Math.abs(e.vx); }
-    if (e.y - e.halfH < 0)    { e.y = e.halfH;       e.vy =  Math.abs(e.vy); }
-    if (e.y + e.halfH > sh)   { e.y = sh - e.halfH;  e.vy = -Math.abs(e.vy); }
-
-    // Sleep
-    const v2 = e.vx * e.vx + e.vy * e.vy;
-    if (v2 < SLEEP_THRESH) {
-      if (++e.sleepN > SLEEP_FRAMES) { e.vx = e.vy = 0; e.sleeping = true; }
-    } else { e.sleepN = 0; }
+    if (e.x-e.halfW<0)   { e.x=e.halfW;      e.vx= Math.abs(e.vx); }
+    if (e.x+e.halfW>sw)  { e.x=sw-e.halfW;   e.vx=-Math.abs(e.vx); }
+    if (e.y-e.halfH<0)   { e.y=e.halfH;      e.vy= Math.abs(e.vy); }
+    if (e.y+e.halfH>sh)  { e.y=sh-e.halfH;   e.vy=-Math.abs(e.vy); }
+    const v2 = e.vx*e.vx + e.vy*e.vy;
+    if (v2 < SLEEP_THRESH) { if (++e.sleepN > SLEEP_FRAMES) { e.vx=e.vy=0; e.sleeping=true; } }
+    else { e.sleepN = 0; }
   }
-
-  // 0. Shield force field
+  // Shield force field
   if (player && player.alive && shieldActive) {
     for (let i = 0; i < pool.length; i++) {
       const e = pool[i];
-      if (!e.alive || e.type !== TYPE.ENEMY) continue;
-      const sdx = e.x - player.x, sdy = e.y - player.y;
-      const sdist = Math.sqrt(sdx*sdx + sdy*sdy);
-      const minD = SHIELD_RADIUS + Math.max(e.halfW, e.halfH);
-      if (sdist < minD && sdist > 0.01) {
-        const snx = sdx/sdist, sny = sdy/sdist;
-        e.vx += snx * 8 * e.invMass;
-        e.vy += sny * 8 * e.invMass;
-        e.x  += snx * (minD - sdist);
-        e.y  += sny * (minD - sdist);
-        e.sleeping = false; e.sleepN = 0;
+      if (!e.alive || e.type!==TYPE.ENEMY) continue;
+      const sdx=e.x-player.x, sdy=e.y-player.y;
+      const sdist=Math.sqrt(sdx*sdx+sdy*sdy);
+      const minD=SHIELD_RADIUS+Math.max(e.halfW,e.halfH);
+      if (sdist<minD && sdist>0.01) {
+        const snx=sdx/sdist, sny=sdy/sdist;
+        e.vx+=snx*8*e.invMass; e.vy+=sny*8*e.invMass;
+        e.x+=snx*(minD-sdist); e.y+=sny*(minD-sdist);
+        e.sleeping=false; e.sleepN=0;
         const lastSH = shieldHitMap.get(e.id) ?? 0;
-        if (now - lastSH > SHIELD_HIT_CD) {
+        if (now-lastSH > SHIELD_HIT_CD) {
           shieldHitMap.set(e.id, now);
           e.energy -= SHIELD_DAMAGE;
           showEnergyBar(e, now);
-          if (e.energy <= 0) {
-            e.alive = false; score += 10;
-            if (e.variant === 'enemy_boss') {
-              for (let _i=0;_i<4;_i++) spawnEnemy('enemy_heavy', e.x+(Math.random()-.5)*30, e.y+(Math.random()-.5)*30);
-            } else if (e.variant === 'enemy_heavy') {
-              for (let _i=0;_i<2;_i++) spawnEnemy('enemy_basic', e.x+(Math.random()-.5)*20, e.y+(Math.random()-.5)*20);
-            }
-          }
+          if (e.energy<=0) { e.alive=false; onEnemyDeath(e); }
         }
       }
     }
   }
-
-  // 2. Broad phase: sweep & prune on X
-  const alive = [];
-  for (let i = 0; i < pool.length; i++) if (pool[i].alive) alive.push(pool[i]);
-  alive.sort((a, b) => a.x - a.halfW - (b.x - b.halfW));
-
-  for (let i = 0; i < alive.length; i++) {
-    const a = alive[i];
-    const aRight = a.x + a.halfW;
-    for (let j = i + 1; j < alive.length; j++) {
-      const b = alive[j];
-      if (b.x - b.halfW > aRight) break;
-
-      const ox = (a.halfW + b.halfW) - Math.abs(b.x - a.x);
-      const oy = (a.halfH + b.halfH) - Math.abs(b.y - a.y);
-      if (ox <= 0 || oy <= 0) continue;
-
-      onCollision(a, b, ox, oy, now);
+  // Broadphase
+  const alive = pool.filter(e => e.alive);
+  alive.sort((a,b) => a.x-a.halfW-(b.x-b.halfW));
+  for (let i=0; i<alive.length; i++) {
+    const a=alive[i], aRight=a.x+a.halfW;
+    for (let j=i+1; j<alive.length; j++) {
+      const b=alive[j];
+      if (b.x-b.halfW > aRight) break;
+      const ox=(a.halfW+b.halfW)-Math.abs(b.x-a.x);
+      const oy=(a.halfH+b.halfH)-Math.abs(b.y-a.y);
+      if (ox<=0||oy<=0) continue;
+      onCollision(a,b,ox,oy,now);
     }
   }
 }
-
 
 // ================================================================
 // INPUT
 // ================================================================
-const keys = {};
-const mouse = { x: 0, y: 0, down: false };
-let player = null;
-let lastShot = 0;
-let currentWeapon = "normal";
+const keys  = {};
+const mouse = { x:0, y:0, down:false };
+let player = null, lastShot = 0, currentWeapon = "normal";
 
 window.addEventListener("keydown", e => {
-  if (e.code === "KeyP") {
-    paused = !paused;
-    elInfo.textContent = paused ? "[PAUSA] - press P to continue" : "";
-    return;
-  }
-  if (e.code === "Digit1") { currentWeapon = "normal"; return; }
-  if (e.code === "Digit2") { currentWeapon = "heavy";  return; }
-  if (e.code === "Digit3") { currentWeapon = "laser";  return; }
-  if (e.code === "Space")  { keys["Space"] = true; return; }
-  keys[e.code] = true;
-  e.preventDefault();
+  if (e.code==="KeyP") { paused=!paused; elInfo.textContent=paused?"[PAUSA] - press P to continue":""; return; }
+  if (e.code==="Digit1") { currentWeapon="normal"; return; }
+  if (e.code==="Digit2") { currentWeapon="heavy";  return; }
+  if (e.code==="Digit3") { currentWeapon="laser";  return; }
+  if (e.code==="Space")  { keys["Space"]=true; return; }
+  keys[e.code]=true; e.preventDefault();
 });
-window.addEventListener("keyup",     e => { keys[e.code] = false; });
-window.addEventListener("mousemove", e => { mouse.x = e.clientX; mouse.y = e.clientY; });
-window.addEventListener("mousedown", e => { if (e.button === 0) mouse.down = true;  });
-window.addEventListener("mouseup",   e => { if (e.button === 0) mouse.down = false; });
+window.addEventListener("keyup",     e => { keys[e.code]=false; });
+window.addEventListener("mousemove", e => { mouse.x=e.clientX; mouse.y=e.clientY; });
+window.addEventListener("mousedown", e => { if(e.button===0) mouse.down=true;  });
+window.addEventListener("mouseup",   e => { if(e.button===0) mouse.down=false; });
 
 function inputUpdate(now) {
   if (!player || !player.alive) return;
-
-  let tx = 0, ty = 0;
-  const left  = keys.KeyA || keys.ArrowLeft;
-  const right = keys.KeyD || keys.ArrowRight;
-  const up    = keys.KeyW || keys.ArrowUp;
-  const down  = keys.KeyS || keys.ArrowDown;
-  if (left)  tx -= PLAYER_SPEED;
-  if (right) tx += PLAYER_SPEED;
-  if (up)    ty -= PLAYER_SPEED;
-  if (down)  ty += PLAYER_SPEED;
-
-  if (left || right || up || down) {
-    // Con teclas: acelerar hacia la velocidad objetivo
-    player.vx += (tx - player.vx) * PLAYER_ACCEL;
-    player.vy += (ty - player.vy) * PLAYER_ACCEL;
-  } else {
-    // Sin teclas: inercia - el sprite se frena poco a poco
-    player.vx *= PLAYER_DAMPING;
-    player.vy *= PLAYER_DAMPING;
-  }
-  player.sleeping = false;
-  player.sleepN   = 0;
-
-  // --- SHIELD ---
-  const spDown = keys["Space"];
-  const shieldAvail = SHIELD_MAX_MS - shieldUsedMs;
-  const cdDone = now >= shieldCooldownUntil;
-  if (spDown && shieldAvail > 0 && cdDone) {
-    if (!shieldActive) shieldActive = true;
-    shieldUsedMs = Math.min(SHIELD_MAX_MS, shieldUsedMs + app.ticker.deltaMS);
-    shieldBarExpiry = now + 3500;  // keep bar visible while active
-    if (shieldUsedMs >= SHIELD_MAX_MS) {
-      shieldActive = false;
-      shieldCooldownUntil = now + SHIELD_COOLDOWN;
-    }
+  let tx=0, ty=0;
+  const left=keys.KeyA||keys.ArrowLeft, right=keys.KeyD||keys.ArrowRight;
+  const up=keys.KeyW||keys.ArrowUp,     down=keys.KeyS||keys.ArrowDown;
+  if (left)  tx-=PLAYER_SPEED; if (right) tx+=PLAYER_SPEED;
+  if (up)    ty-=PLAYER_SPEED; if (down)  ty+=PLAYER_SPEED;
+  if (left||right||up||down) {
+    player.vx+=(tx-player.vx)*PLAYER_ACCEL;
+    player.vy+=(ty-player.vy)*PLAYER_ACCEL;
+  } else { player.vx*=PLAYER_DAMPING; player.vy*=PLAYER_DAMPING; }
+  player.sleeping=false; player.sleepN=0;
+  // Shield
+  const spDown=keys["Space"], shieldAvail=SHIELD_MAX_MS-shieldUsedMs, cdDone=now>=shieldCooldownUntil;
+  if (spDown && shieldAvail>0 && cdDone) {
+    if (!shieldActive) shieldActive=true;
+    shieldUsedMs=Math.min(SHIELD_MAX_MS, shieldUsedMs+app.ticker.deltaMS);
+    shieldBarExpiry=now+3500;
+    if (shieldUsedMs>=SHIELD_MAX_MS) { shieldActive=false; shieldCooldownUntil=now+SHIELD_COOLDOWN; }
   } else {
     if (shieldActive) {
-      shieldActive = false;
-      const ratio = shieldUsedMs / SHIELD_MAX_MS;
-      shieldCooldownUntil = now + ratio * SHIELD_COOLDOWN;
-      shieldBarExpiry = now + SHIELD_COOLDOWN + 500;  // visible for whole recharge
+      shieldActive=false;
+      shieldCooldownUntil=now+(shieldUsedMs/SHIELD_MAX_MS)*SHIELD_COOLDOWN;
+      shieldBarExpiry=now+SHIELD_COOLDOWN+500;
     }
-    if (now >= shieldCooldownUntil && shieldUsedMs > 0 && !shieldActive) {
-      shieldUsedMs = 0;
-    }
+    if (now>=shieldCooldownUntil && shieldUsedMs>0 && !shieldActive) shieldUsedMs=0;
   }
-
-  const weaponCD = currentWeapon === "laser" ? 80 : currentWeapon === "heavy" ? 450 : BULLET_CD_MS;
-  if (mouse.down && now - lastShot >= weaponCD) {
-    lastShot = now;
-    const dx = mouse.x - player.x, dy = mouse.y - player.y;
-    const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    const nx = dx / len, ny = dy / len;
-    const spd = BULLET_SPEED[currentWeapon] ?? BULLET_SPEED.normal;
-    // Offset: salir desde el borde exterior del jugador + margen de 4px
-    const offset = Math.max(player.halfW, player.halfH) + 4;
-    spawnBullet(player.x + nx * offset, player.y + ny * offset, nx * spd, ny * spd, currentWeapon);
+  const weaponCD = currentWeapon==="laser"?80:currentWeapon==="heavy"?450:BULLET_CD_MS;
+  if (mouse.down && now-lastShot>=weaponCD) {
+    lastShot=now;
+    const dx=mouse.x-player.x, dy=mouse.y-player.y;
+    const len=Math.sqrt(dx*dx+dy*dy)||1;
+    const nx=dx/len, ny=dy/len;
+    const spd=BULLET_SPEED[currentWeapon]??BULLET_SPEED.normal;
+    const offset=Math.max(player.halfW,player.halfH)+4;
+    spawnBullet(player.x+nx*offset, player.y+ny*offset, nx*spd, ny*spd, currentWeapon);
   }
 }
 
 // ================================================================
-// HUD  (DOM puro - fuera del stage PixiJS, sin setChildIndex)
+// HUD
 // ================================================================
-let gameOver = false;
-let paused   = false;
-const elFPS  = document.getElementById("hFPS");
-const elInfo = document.getElementById("hInfo");
-let hudMs = 0;
+let gameOver=false, paused=false;
+const elFPS=document.getElementById("hFPS"), elInfo=document.getElementById("hInfo");
+let hudMs=0;
 
 function hudUpdate(now) {
   hudMs += app.ticker.deltaMS;
   if (hudMs < 600) return;
   hudMs = 0;
-  elFPS.textContent = "FPS: " + app.ticker.FPS.toFixed(0) + "  objs: " + pool.length;
+  elFPS.textContent = "FPS: "+app.ticker.FPS.toFixed(0)+"  objs: "+pool.length;
   if (gameOver) {
     elInfo.textContent = "GAME OVER - reload to play again";
+    elPhaseTimer.textContent = "✕"; elPhaseTimer.style.color="#ff4444";
   } else if (paused) {
-    return; // do not overwrite pause message
+    return;
   } else if (player) {
-    const wNames = { normal: "1-Basic", heavy: "2-Heavy", laser: "3-Laser" };
-    const wColors = { normal: "#ffff33", heavy: "#ff8833", laser: "#33ffff" };
-    const cdLeft = shieldCooldownUntil > now ? ((shieldCooldownUntil - now) / 1000).toFixed(1) : null;
-    const shieldInfo = shieldActive ? ' <span style="color:#88ffff">[SHIELD ACTIVE]</span>' : shieldUsedMs === 0 ? ' <span style="color:#88ffff">[SPACE: shield]</span>' : cdLeft ? ' <span style="color:#999">shield recharge: ' + cdLeft + 's</span>' : ' <span style="color:#88ffff">[shield ready]</span>';
-    elInfo.innerHTML = "score: " + score +
-      '  weapon: <span style="color:' + wColors[currentWeapon] + '">' + wNames[currentWeapon] + '</span>' +
-      shieldInfo +
-      "   WASD-click-1/2/3-SPACE";
+    const wNames={normal:"1-Basic",heavy:"2-Heavy",laser:"3-Laser"};
+    const wColors={normal:"#ffff33",heavy:"#ff8833",laser:"#33ffff"};
+    const cdLeft=shieldCooldownUntil>now?((shieldCooldownUntil-now)/1000).toFixed(1):null;
+    const shieldInfo=shieldActive?' <span style="color:#88ffff">[SHIELD ACTIVE]</span>':
+      shieldUsedMs===0?' <span style="color:#88ffff">[SPACE: shield]</span>':
+      cdLeft?' <span style="color:#999">shield recharge: '+cdLeft+'s</span>':
+      ' <span style="color:#88ffff">[shield ready]</span>';
+    elInfo.innerHTML="score: "+score+
+      '  weapon: <span style="color:'+wColors[currentWeapon]+'">'+wNames[currentWeapon]+'</span>'+
+      shieldInfo+"   WASD-click-1/2/3-SPACE";
   }
 }
-// Graphics for aim line (must be declared before drawAimLine)
-const aimLine = new PIXI.Graphics();
-app.stage.addChild(aimLine);
 
+// ================================================================
+// GRÁFICOS
+// ================================================================
+const aimLine=new PIXI.Graphics(); app.stage.addChild(aimLine);
 function drawAimLine() {
   aimLine.clear();
-  if (!player || !player.alive || gameOver) return;
-  const aimDx = mouse.x - player.x, aimDy = mouse.y - player.y;
-  const aimDist = Math.sqrt(aimDx * aimDx + aimDy * aimDy) || 1;
-  const aimCap = Math.min(aimDist, 80);
-  const aimEx = player.x + (aimDx / aimDist) * aimCap;
-  const aimEy = player.y + (aimDy / aimDist) * aimCap;
-  aimLine.lineStyle(1, 0xffffff, 0.35);
-  aimLine.moveTo(player.x, player.y);
-  aimLine.lineTo(aimEx, aimEy);
-  // Pequeno circulo en el cursor
-  aimLine.lineStyle(1, 0xffffff, 0.5);
-  aimLine.drawCircle(mouse.x, mouse.y, 4);
+  if (!player||!player.alive||gameOver) return;
+  const dx=mouse.x-player.x, dy=mouse.y-player.y;
+  const d=Math.sqrt(dx*dx+dy*dy)||1, cap=Math.min(d,80);
+  aimLine.lineStyle(1,0xffffff,0.35);
+  aimLine.moveTo(player.x,player.y);
+  aimLine.lineTo(player.x+dx/d*cap, player.y+dy/d*cap);
+  aimLine.lineStyle(1,0xffffff,0.5);
+  aimLine.drawCircle(mouse.x,mouse.y,4);
 }
 
-// Player status bars (HP + Shield) - appear above sprite on impact/shield use
-const playerBarsGfx = new PIXI.Graphics();
-app.stage.addChild(playerBarsGfx);
-
+const playerBarsGfx=new PIXI.Graphics(); app.stage.addChild(playerBarsGfx);
 function drawPlayerBars(now) {
   playerBarsGfx.clear();
-  if (!player || gameOver) return;
-
-  // Unified visibility: show both if either timer is active
-  const hpActive  = now < playerHPBarExpiry;
-  const shActive  = now < shieldBarExpiry;
-  if (!hpActive && !shActive) return;
-
-  // Fade based on whichever has more time left
-  const longestT = Math.max(
-    hpActive ? (playerHPBarExpiry - now) / PLAYER_HP_BAR_DURATION : 0,
-    shActive ? (shieldBarExpiry   - now) / PLAYER_HP_BAR_DURATION : 0
+  if (!player||gameOver) return;
+  const hpActive=now<playerHPBarExpiry, shActive=now<shieldBarExpiry;
+  if (!hpActive&&!shActive) return;
+  const longestT=Math.max(
+    hpActive?(playerHPBarExpiry-now)/PLAYER_HP_BAR_DURATION:0,
+    shActive?(shieldBarExpiry-now)/PLAYER_HP_BAR_DURATION:0
   );
-  const alpha = longestT < 0.25 ? longestT / 0.25 : 1.0;
-
-  const BAR_W = 80, BAR_H = 6, GAP = 3;
-  const bx = player.x - BAR_W / 2;
-  // HP bar on top, shield bar below it, both above sprite
-  const byHP = player.y - player.halfH - 18;
-  const bySH = byHP + BAR_H + GAP;
-
-  // -- HP bar --
-  const hpFrac = Math.max(0, player.energy / player.maxEnergy);
-  playerBarsGfx.beginFill(0x1a0000, 0.75 * alpha);
-  playerBarsGfx.drawRect(bx, byHP, BAR_W, BAR_H);
-  playerBarsGfx.endFill();
-  // bright red->lime green
-  const hpR = Math.round(255 * (1 - hpFrac)), hpG = Math.round(255 * hpFrac);
-  playerBarsGfx.beginFill((hpR << 16) | (hpG << 8), alpha);
-  playerBarsGfx.drawRect(bx, byHP, BAR_W * hpFrac, BAR_H);
-  playerBarsGfx.endFill();
-  playerBarsGfx.lineStyle(1, 0xff6666, 0.6 * alpha);
-  playerBarsGfx.drawRect(bx, byHP, BAR_W, BAR_H);
-
-  // -- Shield bar --
-  // Shows remaining charge (1 = full, 0 = depleted) while active
-  // Shows recharge progress while cooling down
+  const alpha=longestT<0.25?longestT/0.25:1.0;
+  const BW=80,BH=6,GAP=3,bx=player.x-BW/2;
+  const byHP=player.y-player.halfH-18, bySH=byHP+BH+GAP;
+  const hpFrac=Math.max(0,player.energy/player.maxEnergy);
+  playerBarsGfx.beginFill(0x1a0000,0.75*alpha); playerBarsGfx.drawRect(bx,byHP,BW,BH); playerBarsGfx.endFill();
+  const hpR=Math.round(255*(1-hpFrac)),hpG=Math.round(255*hpFrac);
+  playerBarsGfx.beginFill((hpR<<16)|(hpG<<8),alpha); playerBarsGfx.drawRect(bx,byHP,BW*hpFrac,BH); playerBarsGfx.endFill();
+  playerBarsGfx.lineStyle(1,0xff6666,0.6*alpha); playerBarsGfx.drawRect(bx,byHP,BW,BH);
   let shFrac;
-  if (shieldActive || shieldCooldownUntil <= now) {
-    shFrac = Math.max(0, 1 - shieldUsedMs / SHIELD_MAX_MS);
-  } else {
-    const cdTotal = shieldUsedMs / SHIELD_MAX_MS * SHIELD_COOLDOWN;
-    const cdElapsed = cdTotal - (shieldCooldownUntil - now);
-    shFrac = Math.max(0, Math.min(1, cdElapsed / cdTotal));
-  }
+  if (shieldActive||shieldCooldownUntil<=now) { shFrac=Math.max(0,1-shieldUsedMs/SHIELD_MAX_MS); }
+  else { const ct=shieldUsedMs/SHIELD_MAX_MS*SHIELD_COOLDOWN; shFrac=Math.max(0,Math.min(1,(ct-(shieldCooldownUntil-now))/ct)); }
   playerBarsGfx.lineStyle(0);
-  playerBarsGfx.beginFill(0x001a33, 0.75 * alpha);
-  playerBarsGfx.drawRect(bx, bySH, BAR_W, BAR_H);
-  playerBarsGfx.endFill();
-  // bright cyan
-  playerBarsGfx.beginFill(shieldActive ? 0x00ffff : 0x0088ff, alpha);
-  playerBarsGfx.drawRect(bx, bySH, BAR_W * shFrac, BAR_H);
-  playerBarsGfx.endFill();
-  playerBarsGfx.lineStyle(1, 0x44ccff, 0.6 * alpha);
-  playerBarsGfx.drawRect(bx, bySH, BAR_W, BAR_H);
+  playerBarsGfx.beginFill(0x001a33,0.75*alpha); playerBarsGfx.drawRect(bx,bySH,BW,BH); playerBarsGfx.endFill();
+  playerBarsGfx.beginFill(shieldActive?0x00ffff:0x0088ff,alpha); playerBarsGfx.drawRect(bx,bySH,BW*shFrac,BH); playerBarsGfx.endFill();
+  playerBarsGfx.lineStyle(1,0x44ccff,0.6*alpha); playerBarsGfx.drawRect(bx,bySH,BW,BH);
 }
-// Shield force field visual
-const shieldGfx = new PIXI.Graphics();
-app.stage.addChild(shieldGfx);
 
+const shieldGfx=new PIXI.Graphics(); app.stage.addChild(shieldGfx);
 function drawShield(now) {
   shieldGfx.clear();
-  if (!player || !player.alive || !shieldActive) return;
-  const pulse = 0.18 + 0.12 * Math.sin(now / 80);
-  shieldGfx.lineStyle(2, 0x88ffff, 0.85);
-  shieldGfx.drawCircle(player.x, player.y, SHIELD_RADIUS);
-  shieldGfx.beginFill(0x44aaff, pulse);
-  shieldGfx.drawCircle(player.x, player.y, SHIELD_RADIUS);
-  shieldGfx.endFill();
+  if (!player||!player.alive||!shieldActive) return;
+  const pulse=0.18+0.12*Math.sin(now/80);
+  shieldGfx.lineStyle(2,0x88ffff,0.85); shieldGfx.drawCircle(player.x,player.y,SHIELD_RADIUS);
+  shieldGfx.beginFill(0x44aaff,pulse); shieldGfx.drawCircle(player.x,player.y,SHIELD_RADIUS); shieldGfx.endFill();
 }
 
+// ================================================================
+// SETUP
+// ================================================================
 function setup() {
-  const sw = W(), sh = H(), WS = 14;
-  // Paredes perimetrales
-  spawnWall(sw / 2,      WS / 2,      sw, WS);   // top
-  spawnWall(sw / 2,      sh - WS / 2, sw, WS);   // bottom
-  spawnWall(WS / 2,      sh / 2,      WS, sh);   // left
-  spawnWall(sw - WS / 2, sh / 2,      WS, sh);   // right
-  // 5 paredes interiores: rejilla 2Ã-3 con jitter para distribucion uniforme
-  const cols = 2, rows = 3;
-  const cellW = sw / (cols + 1), cellH = sh / (rows + 1);
-  const wallDefs = [
-    [60, 14], [14, 60], [80, 14], [14, 50], [70, 18],
-  ];
-  let wi = 0;
-  for (let r = 1; r <= rows; r++) {
-    for (let c = 1; c <= cols && wi < 5; c++, wi++) {
-      const cx = cellW * c + (Math.random() - 0.5) * cellW * 0.4;
-      const cy = cellH * r + (Math.random() - 0.5) * cellH * 0.4;
-      const [ww, wh] = wallDefs[wi];
-      spawnWall(cx, cy, ww, wh);
-    }
+  const sw=W(), sh=H(), WS=14;
+  spawnWall(sw/2,   WS/2,     sw,WS);
+  spawnWall(sw/2,   sh-WS/2,  sw,WS);
+  spawnWall(WS/2,   sh/2,     WS,sh);
+  spawnWall(sw-WS/2,sh/2,     WS,sh);
+  const cols=2, rows=3, cellW=sw/(cols+1), cellH=sh/(rows+1);
+  const wallDefs=[[60,14],[14,60],[80,14],[14,50],[70,18]];
+  let wi=0;
+  for (let r=1;r<=rows;r++) for (let c=1;c<=cols&&wi<5;c++,wi++) {
+    spawnWall(
+      cellW*c+(Math.random()-0.5)*cellW*0.4,
+      cellH*r+(Math.random()-0.5)*cellH*0.4,
+      wallDefs[wi][0], wallDefs[wi][1]
+    );
   }
-  for (let i = 0; i < NUM_ENEMIES; i++) spawnEnemy();
   player = spawnPlayer();
 }
 
@@ -782,23 +785,23 @@ function setup() {
 // GAME LOOP
 // ================================================================
 let prevTime = null;
-
 app.ticker.add(() => {
   const now = performance.now();
-
-  // Calcular dt propio - no depender de ticker.deltaMS que puede ser NaN
-  if (prevTime === null) { prevTime = now; return; }
-  const elapsed = now - prevTime;
+  if (prevTime===null) { prevTime=now; return; }
+  const dt = Math.min((now-prevTime)/16.6667, 3);
   prevTime = now;
-  const dt = Math.min(elapsed / 16.6667, 3);  // cap a 3Ã- para tabs lentas
+
+  if (currentPhase===0 && !gameOver) startPhase(1, now);
 
   if (!gameOver && !paused) {
+    phaseUpdate(now);
+    enemyAI(now);
     inputUpdate(now);
     physicsStep(dt, now);
     purge();
     syncGraphics();
     updateEnergyBars(now);
-    updateFragments(dt, now);
+    updateFragments(dt);
     spawnExhaust(now);
     updateExhaust(dt);
     drawShield(now);
@@ -809,12 +812,8 @@ app.ticker.add(() => {
   hudUpdate(now);
 });
 
-window.addEventListener("resize", () => {
-  app.renderer.resize(window.innerWidth, window.innerHeight);
-});
-
+window.addEventListener("resize", () => { app.renderer.resize(window.innerWidth, window.innerHeight); });
 setup();
-
 </script>
 </body>
 </html>
