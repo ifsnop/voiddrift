@@ -42,7 +42,7 @@ const TYPE = { ENEMY:"enemy", PLAYER:"player", WALL:"wall", BULLET:"bullet" };
 
 // --- FASES ---
 const PHASE_DURATION_MS   = 30000;   // duración de cada fase (ms)
-const TOTAL_PHASES        = 5;
+const TOTAL_PHASES        = 6;
 
 // Enemigos que se AÑADEN al inicio de cada fase (los anteriores permanecen)
 const PHASE_ADD_ENEMIES = {
@@ -51,6 +51,7 @@ const PHASE_ADD_ENEMIES = {
   3: { enemy_heavy: 5, enemy_boss: 1, enemy_spawner: 1 },
   4: { enemy_spawner: 2, enemy_follower: 5 },
   5: { enemy_hitter: 4 },
+  6: { enemy_blackhole: 1 },
 };
 
 // --- BULLETS: desvanecimiento con distancia ---
@@ -81,17 +82,28 @@ const HITTER_SHOOT_INTERVAL_MS  = 2500;
 const HITTER_BULLET_SPEED       = 5;
 const HITTER_BULLET_DAMAGE      = 2;
 
+// --- BLACKHOLE ---
+const BLACKHOLE_INITIAL_RADIUS  = 100;   // radio inicial de atracción (px)
+const BLACKHOLE_RADIUS_GROW     = 8;     // px/segundo que crece el radio
+const BLACKHOLE_INITIAL_FORCE   = 120;   // fuerza de atracción inicial (px/s²)
+const BLACKHOLE_FORCE_GROW      = 15;    // fuerza extra por segundo
+const BLACKHOLE_ORBIT_SPEED     = 0.45;  // rad/s en su movimiento circular
+const BLACKHOLE_ORBIT_RADIUS    = 90;    // radio de la órbita del blackhole
+const BLACKHOLE_RING_COUNT      = 5;     // círculos concéntricos visibles
+const BLACKHOLE_SIZE            = 28;    // hitbox (cuadrado)
+
 // --- ENERGÍA ---
 const ENERGY = {
   enemy_basic:1, enemy_heavy:5, enemy_boss:15,
   enemy_spawner:12, enemy_follower:3, enemy_hitter:7,
+  enemy_blackhole: 15*20,
   player:10, wall:Infinity
 };
 
 // --- DAÑO de enemigos al contacto ---
 const ENEMY_DAMAGE = {
   enemy_basic:1, enemy_heavy:2, enemy_boss:5,
-  enemy_spawner:1, enemy_follower:3, enemy_hitter:2
+  enemy_spawner:1, enemy_follower:3, enemy_hitter:2, enemy_blackhole:999
 };
 
 // --- SHIELD ---
@@ -150,6 +162,7 @@ const ENEMY_SIZE = {
   enemy_spawner: [38, 38],
   enemy_follower:[20, 20],
   enemy_hitter:  [22, 22],
+  enemy_blackhole:[BLACKHOLE_SIZE, BLACKHOLE_SIZE],
 };
 const ENEMY_COLOR = {
   enemy_basic:   0x4488ff,
@@ -158,6 +171,7 @@ const ENEMY_COLOR = {
   enemy_spawner: 0xaa44ff,
   enemy_follower:0x44ff88,
   enemy_hitter:  0xff4466,
+  enemy_blackhole:0x110022,
 };
 const COLOR = {
   player:0x00ffcc, wall:0x5577aa,
@@ -238,6 +252,16 @@ function buildEnemyGfx(e) {
     g.endFill();
     g.lineStyle(2, 0xff0000, 0.8);
     g.drawCircle(e.halfW, e.halfH, e.halfW - 2);
+  } else if (e.variant === 'enemy_blackhole') {
+    // Centro negro con halo violeta — los anillos se dibujan aparte en tiempo real
+    g.beginFill(0x000000);
+    g.drawCircle(e.halfW, e.halfH, e.halfW);
+    g.endFill();
+    g.lineStyle(2, 0xcc00ff, 0.9);
+    g.drawCircle(e.halfW, e.halfH, e.halfW);
+    g.beginFill(0x6600cc, 0.4);
+    g.drawCircle(e.halfW, e.halfH, e.halfW * 0.55);
+    g.endFill();
   } else {
     g.beginFill(e.color);
     g.drawRect(0, 0, e.w, e.h);
@@ -298,6 +322,7 @@ function spawnEnemy(variant, x, y) {
   ));
   // Spawn burst effect
   spawnBirthEffect(sx, sy, col, Math.max(ew, eh));
+  if (variant === 'enemy_blackhole') blackholeSpawnTime = performance.now();
   return e;
 }
 
@@ -575,6 +600,39 @@ function enemyAI(now) {
       if (e.gfx) e.gfx.alpha = 0.65 + 0.35 * Math.sin(now / 250 + e.id);
     }
 
+    // ---- BLACKHOLE ----
+    if (e.variant === 'enemy_blackhole') {
+      // Movimiento orbital concéntrico
+      const age = (performance.now() - blackholeSpawnTime) / 1000; // segundos
+      const orbitAngle = age * BLACKHOLE_ORBIT_SPEED;
+      const cx = W() * 0.5, cy = H() * 0.5;
+      const targetX = cx + Math.cos(orbitAngle) * BLACKHOLE_ORBIT_RADIUS;
+      const targetY = cy + Math.sin(orbitAngle) * BLACKHOLE_ORBIT_RADIUS;
+      // Mover suavemente hacia la posición orbital
+      e.vx += (targetX - e.x) * 0.04;
+      e.vy += (targetY - e.y) * 0.04;
+      e.vx *= 0.85; e.vy *= 0.85;
+      e.sleeping = false; e.sleepN = 0;
+
+      // Dibujar anillos concéntricos
+      const radius = BLACKHOLE_INITIAL_RADIUS + age * BLACKHOLE_RADIUS_GROW;
+      blackholeGfx.clear();
+      for (let ring = 1; ring <= BLACKHOLE_RING_COUNT; ring++) {
+        const rf = ring / BLACKHOLE_RING_COUNT;
+        const rr = radius * rf;
+        const pulse = 0.15 + 0.12 * Math.sin(now / 200 + ring * 1.2);
+        blackholeGfx.lineStyle(1.5, 0xcc00ff, (1 - rf * 0.5) * 0.7);
+        blackholeGfx.drawCircle(e.x, e.y, rr);
+        blackholeGfx.beginFill(0x330044, pulse * (1 - rf * 0.6));
+        blackholeGfx.drawCircle(e.x, e.y, rr);
+        blackholeGfx.endFill();
+      }
+      if (e.gfx) {
+        const sc = 1 + 0.1 * Math.sin(now / 150);
+        e.gfx.scale.set(sc);
+      }
+    }
+
     // ---- HITTER ----
     if (e.variant === 'enemy_hitter') {
       if (now - e.lastShot >= HITTER_SHOOT_INTERVAL_MS) {
@@ -609,6 +667,7 @@ const ENEMY_FX_RATE = {
   enemy_spawner:  150,
   enemy_follower: 180,
   enemy_hitter:   200,
+  enemy_blackhole: 60,
 };
 
 const enemyParticles = [];
@@ -670,6 +729,16 @@ function emitEnemyFx(e, now) {
       sz = 2 + Math.random()*2;
       vx = (Math.random()-0.5)*0.6; vy = (Math.random()-0.5)*0.6;
       life = 400; shape = 'rect';
+      break;
+
+    case 'enemy_blackhole':
+      // Partículas violeta oscuro que espiralan hacia adentro
+      col = Math.random()>0.5 ? 0xcc00ff : 0x440066;
+      sz = 1.5 + Math.random()*2.5;
+      { const a = Math.random()*Math.PI*2, r = 20+Math.random()*60;
+        vx = -Math.sin(a)*1.2 - (Math.random()-0.5)*0.5;
+        vy =  Math.cos(a)*1.2 - (Math.random()-0.5)*0.5; }
+      life = 900; shape = 'circle';
       break;
   }
 
@@ -1099,6 +1168,11 @@ let shieldUsedMs        = 0;
 let shieldCooldownUntil = 0;
 const shieldHitMap      = new Map();
 
+// --- BLACKHOLE state ---
+const blackholeGfx = new PIXI.Graphics();   // anillos concéntricos
+// (added to stage after app is ready — done in setup())
+let blackholeSpawnTime = 0;                 // performance.now() cuando apareció
+
 function onEnemyDeath(enemy) {
   score += 10;
   if (enemy.variant === 'enemy_boss') {
@@ -1138,11 +1212,12 @@ function onCollision(a, b, ox, oy, now) {
         applyBulletImpulse(bullet, other);
         bullet.alive = false;
       }
-      if (other.type === TYPE.ENEMY) { bullet.alive = false; }
+      if (other.type === TYPE.ENEMY) { return; }  // balas enemigas no afectan a enemigos
       return;
     }
 
     // Bala del jugador
+    if (other.type === TYPE.BULLET) { return; }  // balas no se destruyen entre sí
     if (other.type === TYPE.WALL) {
       spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, 0x888888, 5);
       bullet.alive = false; return;
@@ -1263,6 +1338,39 @@ function physicsStep(dt, now) {
       }
     }
   }
+  // Blackhole gravity field
+  const bh = pool.find(e => e.alive && e.variant === 'enemy_blackhole');
+  if (bh) {
+    const age = (performance.now() - blackholeSpawnTime) / 1000;
+    const radius = BLACKHOLE_INITIAL_RADIUS + age * BLACKHOLE_RADIUS_GROW;
+    const force  = BLACKHOLE_INITIAL_FORCE  + age * BLACKHOLE_FORCE_GROW;
+    for (let i = 0; i < pool.length; i++) {
+      const e = pool[i];
+      if (!e.alive || e === bh || e.invMass === 0) continue;
+      const dx = bh.x - e.x, dy = bh.y - e.y;
+      const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      if (dist < radius) {
+        const strength = (1 - dist / radius);   // 0 en el borde, 1 en el centro
+        const acc = force * strength * dt / 60;
+        e.vx += (dx / dist) * acc * e.invMass;
+        e.vy += (dy / dist) * acc * e.invMass;
+        e.sleeping = false; e.sleepN = 0;
+        // Colisión con el núcleo → destrucción instantánea
+        if (dist < bh.halfW + Math.max(e.halfW, e.halfH)) {
+          if (e.type === TYPE.PLAYER) {
+            e.energy = 0; e.alive = false;
+          } else {
+            if (e.type === TYPE.ENEMY) onEnemyDeath(e);
+            e.alive = false;
+          }
+          spawnFragments(e.x, e.y, e.vx, e.vy, e.color ?? 0xffffff, 10);
+        }
+      }
+    }
+  } else {
+    blackholeGfx.clear();
+  }
+
   // Broadphase
   const alive=pool.filter(e=>e.alive);
   alive.sort((a,b)=>a.x-a.halfW-(b.x-b.halfW));
@@ -1302,6 +1410,7 @@ window.addEventListener("keydown", e => {
   if (e.code==="KeyV") { spawnEnemy("enemy_spawner"); return; }
   if (e.code==="KeyB") { spawnEnemy("enemy_follower");return; }
   if (e.code==="KeyN") { spawnEnemy("enemy_hitter");  return; }
+  if (e.code==="KeyM") { spawnEnemy("enemy_blackhole"); return; }
   keys[e.code]=true; e.preventDefault();
 });
 window.addEventListener("keyup",     e => { keys[e.code]=false; });
@@ -1391,7 +1500,7 @@ function hudUpdate(now) {
     elInfo.innerHTML = "score: "+score+
       '  weapon: <span style="color:'+wColors[currentWeapon]+'">'+wNames[currentWeapon]+'</span>'+
       shieldInfo+
-      '  <span style="color:#888">Z/X/C/V/B/N: spawn</span>'+
+      '  <span style="color:#888">Z/X/C/V/B/N/M: spawn</span>'+
       "   WASD-click-1/2/3-SPACE";
   }
 }
@@ -1544,6 +1653,7 @@ function generateInteriorWalls(sw, sh) {
 }
 
 function setup() {
+  app.stage.addChild(blackholeGfx);
   const sw=W(), sh=H(), WS=14;
   // Paredes perimetrales
   spawnWall(sw/2,    WS/2,    sw, WS);
