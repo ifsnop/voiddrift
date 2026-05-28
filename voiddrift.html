@@ -25,6 +25,7 @@
 const TYPE = { ENEMY:"enemy", PLAYER:"player", WALL:"wall", BULLET:"bullet" };
 
 const ENERGY        = { enemy_basic:2, enemy_heavy:5, enemy_boss:15, player:10, wall:Infinity };
+const ENEMY_DAMAGE  = { enemy_basic:1, enemy_heavy:2, enemy_boss:5  };  // daño al jugador por contacto
 const BULLET_DAMAGE = { normal:1, heavy:3, laser:6 };
 const BULLET_SPEED  = { normal:10, heavy:7, laser:18 };
 const BULLET_MASS   = { normal:0.3, heavy:1.5, laser:0.05 };
@@ -158,6 +159,49 @@ function spawnBullet(x, y, vx, vy, btype) {
 }
 
 // ================================================================
+// FRAGMENTOS DE IMPACTO (no son entidades, igual que las barras)
+// ================================================================
+const fragments = [];  // { gfx, vx, vy, x, y, life, maxLife }
+const FRAG_DURATION = 350; // ms
+const FRAG_COUNT    = 6;   // particulas por impacto
+
+function spawnFragments(x, y, bvx, bvy, color, now) {
+  for (let i = 0; i < FRAG_COUNT; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd   = 1.5 + Math.random() * 3;
+    // Sesgar en la dirección de la bala para mayor realismo
+    const fvx   = Math.cos(angle) * spd + bvx * 0.15;
+    const fvy   = Math.sin(angle) * spd + bvy * 0.15;
+    const g = new PIXI.Graphics();
+    g.beginFill(color);
+    g.drawRect(-1.5, -1.5, 3, 3);
+    g.endFill();
+    g.x = x; g.y = y;
+    app.stage.addChild(g);
+    fragments.push({ gfx: g, vx: fvx, vy: fvy, x, y, life: FRAG_DURATION, maxLife: FRAG_DURATION });
+  }
+}
+
+function updateFragments(dt, now) {
+  for (let i = fragments.length - 1; i >= 0; i--) {
+    const f = fragments[i];
+    f.life -= app.ticker.deltaMS;
+    if (f.life <= 0) {
+      app.stage.removeChild(f.gfx); f.gfx.destroy();
+      fragments.splice(i, 1);
+      continue;
+    }
+    f.x += f.vx * dt;
+    f.y += f.vy * dt;
+    f.gfx.x = f.x;
+    f.gfx.y = f.y;
+    const t = f.life / f.maxLife;  // 1→0
+    f.gfx.alpha = t * t;           // fade cuadrático
+    f.vx *= 0.88; f.vy *= 0.88;    // rozamiento
+  }
+}
+
+// ================================================================
 // ENERGY BARS
 // ================================================================
 const BAR_W = 32, BAR_H = 4, BAR_YOFF = 8;
@@ -229,7 +273,7 @@ function onCollision(a, b, ox, oy, now) {
       bullet.alive = false;
       return;  // paredes inamovibles: sin impulso
     }
-    if (other.type === TYPE.ENEMY || other.type === TYPE.PLAYER) {
+    if (other.type === TYPE.ENEMY) {
       const btype = bullet.variant.replace("bullet_", "");
       other.energy -= BULLET_DAMAGE[btype] ?? 1;
       if (other.energy <= 0) {
@@ -244,6 +288,9 @@ function onCollision(a, b, ox, oy, now) {
         }
       }
       if (other.type === TYPE.ENEMY) showEnergyBar(other, now);
+      // Fragmentos visuales de impacto
+      const fragColor = ENEMY_COLOR[other.variant] ?? 0xffffff;
+      spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, fragColor, now);
       // Impulso: usamos la dirección real de vuelo de la bala como eje,
       // no el eje AABB mínimo (que puede ser perpendicular al disparo y anular el impulso).
       applyBulletImpulse(bullet, other);
@@ -260,7 +307,8 @@ function onCollision(a, b, ox, oy, now) {
     const pl = a.type === TYPE.PLAYER ? a : b;
     if (now - pl.lastHit > HIT_CD_MS) {
       pl.lastHit = now;
-      pl.energy -= 1;
+      const enemy = a.type === TYPE.ENEMY ? a : b;
+      pl.energy -= ENEMY_DAMAGE[enemy.variant] ?? 1;
       if (pl.energy <= 0) pl.alive = false;
     }
   }
@@ -472,8 +520,7 @@ function hudUpdate() {
   } else if (player) {
     const wNames = { normal: "1-Basic", heavy: "2-Heavy", laser: "3-Laser" };
     const wColors = { normal: "#ffff33", heavy: "#ff8833", laser: "#33ffff" };
-    elInfo.innerHTML = "HP: " + player.energy + "/" + player.maxEnergy +
-      "  score: " + score +
+    elInfo.innerHTML = "score: " + score +
       '  arma: <span style="color:' + wColors[currentWeapon] + '">' + wNames[currentWeapon] + '</span>' +
       "   &nbsp; WASD mover · click disparar · 1/2/3 cambiar arma";
   }
@@ -491,7 +538,7 @@ function drawAimLine() {
   if (!player || !player.alive || gameOver) return;
   const aimDx = mouse.x - player.x, aimDy = mouse.y - player.y;
   const aimDist = Math.sqrt(aimDx * aimDx + aimDy * aimDy) || 1;
-  const aimCap = Math.min(aimDist, 200);
+  const aimCap = Math.min(aimDist, 80);
   const aimEx = player.x + (aimDx / aimDist) * aimCap;
   const aimEy = player.y + (aimDy / aimDist) * aimCap;
   aimLine.lineStyle(1, 0xffffff, 0.35);
@@ -500,6 +547,31 @@ function drawAimLine() {
   // PequeÃ±o cÃ­rculo en el cursor
   aimLine.lineStyle(1, 0xffffff, 0.5);
   aimLine.drawCircle(mouse.x, mouse.y, 4);
+}
+
+// Barra de vida del jugador (PixiJS, siempre visible)
+const playerHPBar = new PIXI.Graphics();
+app.stage.addChild(playerHPBar);
+
+function drawPlayerHPBar() {
+  playerHPBar.clear();
+  if (!player || gameOver) return;
+  const BAR_W = 80, BAR_H = 7;
+  const bx = player.x - BAR_W / 2;
+  const by = player.y - player.halfH - 14;
+  // Fondo
+  playerHPBar.beginFill(0x333333, 0.85);
+  playerHPBar.drawRect(bx, by, BAR_W, BAR_H);
+  playerHPBar.endFill();
+  // Relleno verde→rojo
+  const frac = Math.max(0, player.energy / player.maxEnergy);
+  const r = Math.round(255 * (1 - frac)), gv = Math.round(200 * frac);
+  playerHPBar.beginFill((r << 16) | (gv << 8), 1);
+  playerHPBar.drawRect(bx, by, BAR_W * frac, BAR_H);
+  playerHPBar.endFill();
+  // Borde
+  playerHPBar.lineStyle(1, 0xffffff, 0.4);
+  playerHPBar.drawRect(bx, by, BAR_W, BAR_H);
 }
 
 function setup() {
@@ -548,7 +620,9 @@ app.ticker.add(() => {
     purge();
     syncGraphics();
     updateEnergyBars(now);
+    updateFragments(dt, now);
     drawAimLine();
+    drawPlayerHPBar();
     if (player && !player.alive) gameOver = true;
   }
   hudUpdate();
