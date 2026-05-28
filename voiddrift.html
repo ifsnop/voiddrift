@@ -1442,41 +1442,45 @@ app.stage.addChild(playerBarsGfx);
 function drawPlayerBars(now) {
   playerBarsGfx.clear();
   if (!player||gameOver) return;
-
+  const hpActive = now < playerHPBarExpiry;
+  const shActive = now < shieldBarExpiry;
+  if (!hpActive && !shActive) return;
+  const longestT = Math.max(
+    hpActive ? (playerHPBarExpiry - now) / PLAYER_HP_BAR_DURATION : 0,
+    shActive ? (shieldBarExpiry   - now) / PLAYER_HP_BAR_DURATION : 0
+  );
+  const alpha = longestT < 0.25 ? longestT / 0.25 : 1.0;
   const BW=80, BH=6, GAP=3, bx=player.x-BW/2;
-  const byHP=player.y-player.halfH-18;
+  const byHP=player.y-player.halfH-18, bySH=byHP+BH+GAP;
 
-  // HP bar — always visible, fades only when full
+  // HP bar
   const hpFrac=Math.max(0,player.energy/player.maxEnergy);
-  const hpAlpha = hpFrac < 1 ? 1 : 0.45;  // dim when full, bright when damaged
-  playerBarsGfx.beginFill(0x1a0000, 0.75*hpAlpha);
+  playerBarsGfx.beginFill(0x1a0000, 0.75*alpha);
   playerBarsGfx.drawRect(bx,byHP,BW,BH); playerBarsGfx.endFill();
   const hpR=Math.round(255*(1-hpFrac)), hpG=Math.round(255*hpFrac);
-  playerBarsGfx.beginFill((hpR<<16)|(hpG<<8), hpAlpha);
+  playerBarsGfx.beginFill((hpR<<16)|(hpG<<8), alpha);
   playerBarsGfx.drawRect(bx,byHP,BW*hpFrac,BH); playerBarsGfx.endFill();
-  playerBarsGfx.lineStyle(1,0xff6666,0.6*hpAlpha);
+  playerBarsGfx.lineStyle(1,0xff6666,0.6*alpha);
   playerBarsGfx.drawRect(bx,byHP,BW,BH);
 
-  // Shield bar: SIEMPRE visible (no depende de expiry)
-  const inCD2 = now < shieldCooldownUntil;
+  // Shield bar
+  const inCD = now < shieldCooldownUntil;
   let shFrac, shColor;
-  if (inCD2) {
+  if (inCD) {
     const elapsed = SHIELD_COOLDOWN - (shieldCooldownUntil - now);
     shFrac  = Math.max(0, Math.min(1, elapsed / SHIELD_COOLDOWN));
     shColor = 0x336699;
   } else {
     shFrac  = Math.max(0, 1 - shieldUsedMs / SHIELD_MAX_MS);
-    shColor = shieldActive ? 0x00ffff : (shFrac < 1 ? 0x0088ff : 0x00aaff);
+    shColor = shieldActive ? 0x00ffff : 0x0088ff;
   }
-  const BW2=80, BH2=6, bx2=player.x-BW2/2;
-  const bySH2 = player.y-player.halfH-18 + BH2 + GAP;
   playerBarsGfx.lineStyle(0);
-  playerBarsGfx.beginFill(0x001a33, 0.75);
-  playerBarsGfx.drawRect(bx2, bySH2, BW2, BH2); playerBarsGfx.endFill();
-  playerBarsGfx.beginFill(shColor, 1);
-  playerBarsGfx.drawRect(bx2, bySH2, BW2*shFrac, BH2); playerBarsGfx.endFill();
-  playerBarsGfx.lineStyle(1, 0x44ccff, 0.6);
-  playerBarsGfx.drawRect(bx2, bySH2, BW2, BH2);
+  playerBarsGfx.beginFill(0x001a33, 0.75*alpha);
+  playerBarsGfx.drawRect(bx,bySH,BW,BH); playerBarsGfx.endFill();
+  playerBarsGfx.beginFill(shColor, alpha);
+  playerBarsGfx.drawRect(bx,bySH,BW*shFrac,BH); playerBarsGfx.endFill();
+  playerBarsGfx.lineStyle(1,0x44ccff,0.6*alpha);
+  playerBarsGfx.drawRect(bx,bySH,BW,BH);
 }
 
 const shieldGfx = new PIXI.Graphics();
