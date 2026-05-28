@@ -36,13 +36,13 @@
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js"></script>
 <script>
 // ================================================================
-// CONSTANTS
+// CONSTANTS - edita aqui para rebalancear el juego
 // ================================================================
 const TYPE = { ENEMY:"enemy", PLAYER:"player", WALL:"wall", BULLET:"bullet" };
 
 // --- FASES ---
-const PHASE_DURATION_MS     = 30000;  // duración de cada fase (ms)
-const TOTAL_PHASES          = 5;
+const PHASE_DURATION_MS   = 30000;   // duración de cada fase (ms)
+const TOTAL_PHASES        = 5;
 
 // Enemigos que se AÑADEN al inicio de cada fase (los anteriores permanecen)
 const PHASE_ADD_ENEMIES = {
@@ -53,24 +53,33 @@ const PHASE_ADD_ENEMIES = {
   5: { enemy_hitter: 4 },
 };
 
+// --- BULLETS: desvanecimiento con distancia ---
+// Las balas recorren MAX_BULLET_TRAVEL antes de desaparecer por completo.
+// A partir de BULLET_FADE_START_FRAC (fracción de MAX_BULLET_TRAVEL)
+// empiezan a perder daño, masa y alpha.
+const BULLET_MAX_TRAVEL_FRAC  = 0.667;  // fracción del ancho de pantalla
+const BULLET_FADE_START_FRAC  = 0.40;   // la bala empieza a debilitarse al 40% del recorrido
+// Daño y masa mínimos al llegar al límite (0 = desaparece sin hacer nada)
+const BULLET_MIN_DAMAGE_FRAC  = 0.0;    // fracción del daño base al final del recorrido
+const BULLET_MIN_MASS_FRAC    = 0.1;
+
 // --- SPAWNER ---
 const SPAWNER_SPAWN_INTERVAL_MS = 20000;
 const SPAWNER_SPAWN_VARIANT     = "enemy_heavy";
 const SPAWNER_DEATH_RELEASE     = 3;
-// Efecto visual del spawner al spawnear
-const SPAWNER_PULSE_RADIUS      = 90;   // radio de la onda expansiva (px)
-const SPAWNER_PULSE_DURATION    = 500;  // ms que dura la onda
+const SPAWNER_PULSE_RADIUS      = 110;   // radio máximo de la onda expansiva
+const SPAWNER_PULSE_DURATION    = 600;   // ms de duración de la onda
+const SPAWNER_PULSE_COUNT       = 3;     // ondas concéntricas por evento
 
 // --- FOLLOWER ---
 const FOLLOWER_IMPULSE_INTERVAL_MS = 5000;
-// Al impulso: frenamos la vel anterior y lanzamos directo al player
-const FOLLOWER_BRAKE_FACTOR        = 0.1;  // cuánto se conserva la vel previa (0=frena del todo)
-const FOLLOWER_IMPULSE_SPEED       = 9;    // velocidad resultante hacia el player
+const FOLLOWER_BRAKE_FACTOR        = 0.08;  // conserva poco de vel anterior
+const FOLLOWER_IMPULSE_SPEED       = 9;
 
 // --- HITTER ---
-const HITTER_SHOOT_INTERVAL_MS  = 2500;   // ms entre disparos del hitter
-const HITTER_BULLET_SPEED       = 5;      // velocidad del proyectil enemigo
-const HITTER_BULLET_DAMAGE      = 2;      // daño al jugador por impacto
+const HITTER_SHOOT_INTERVAL_MS  = 2500;
+const HITTER_BULLET_SPEED       = 5;
+const HITTER_BULLET_DAMAGE      = 2;
 
 // --- ENERGÍA ---
 const ENERGY = {
@@ -85,9 +94,10 @@ const ENEMY_DAMAGE = {
   enemy_spawner:1, enemy_follower:3, enemy_hitter:2
 };
 
-// --- SHIELD (recarga más lenta) ---
+// --- SHIELD ---
 const SHIELD_MAX_MS    = 3000;
-const SHIELD_COOLDOWN  = 20000;  // recarga lenta
+const SHIELD_COOLDOWN  = 20000;   // recarga lenta
+const SHIELD_MIN_TO_USE = 200;    // ms mínimos de carga para poder activar
 const SHIELD_RADIUS    = 36;
 const SHIELD_DAMAGE    = 3;
 const SHIELD_HIT_CD    = 600;
@@ -102,6 +112,22 @@ const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4 };
 const ENEMY_BULLET_COLOR  = 0xff3333;
 const ENEMY_BULLET_SIZE   = 7;
 const ENEMY_BULLET_MASS   = 0.3;
+const ENEMY_BULLET_TRAVEL = 9999;  // balas enemigas no se desvanecen
+
+// --- FRAGMENTOS de impacto ---
+const FRAG_DURATION    = 500;
+const FRAG_COUNT_MIN   = 10;   // partículas mínimas por impacto
+const FRAG_COUNT_MAX   = 18;   // partículas máximas
+const FRAG_SPEED_MIN   = 2.0;
+const FRAG_SPEED_MAX   = 6.0;
+const FRAG_SIZE_MIN    = 1.5;
+const FRAG_SIZE_MAX    = 4.0;
+
+// --- EXHAUST ---
+const EXHAUST_DURATION = 280;
+const EXHAUST_RATE_MS  = 30;
+const ENERGY_BAR_DURATION    = 3000;
+const PLAYER_HP_BAR_DURATION = 3000;
 
 // --- FÍSICA ---
 const RESTITUTION   = 0.75;
@@ -116,12 +142,12 @@ const PLAYER_DAMPING = 0.965;
 const BULLET_CD_MS   = 220;
 const HIT_CD_MS      = 1200;
 
-// --- TAMAÑOS y COLORES de enemigos ---
+// --- TAMAÑOS y COLORES ---
 const ENEMY_SIZE = {
   enemy_basic:   [12, 12],
   enemy_heavy:   [22, 22],
   enemy_boss:    [36, 36],
-  enemy_spawner: [38, 38],   // grande y amenazante
+  enemy_spawner: [38, 38],
   enemy_follower:[20, 20],
   enemy_hitter:  [22, 22],
 };
@@ -137,14 +163,6 @@ const COLOR = {
   player:0x00ffcc, wall:0x5577aa,
   bullet_normal:0xffff33, bullet_heavy:0xff8833, bullet_laser:0x33ffff,
 };
-
-// --- PARTÍCULAS ---
-const FRAG_DURATION       = 350;
-const FRAG_COUNT          = 6;
-const EXHAUST_DURATION    = 280;
-const EXHAUST_RATE_MS     = 30;
-const ENERGY_BAR_DURATION = 3000;
-const PLAYER_HP_BAR_DURATION = 3000;
 
 // ================================================================
 // PIXI SETUP
@@ -169,15 +187,20 @@ function makeEntity(type, variant, x, y, w, h, vx, vy, mass, color) {
     maxEnergy: ENERGY[variant] ?? 1,
     x, y, vx, vy, w, h,
     halfW: w * 0.5, halfH: h * 0.5,
-    mass,
+    mass, baseMass: mass,
     invMass: (mass === Infinity) ? 0 : 1 / mass,
     restitution: RESTITUTION, friction: FRICTION,
     sleepN: 0, sleeping: false,
     lastHit: 0, color, gfx: null,
-    lastSpawn: 0,    // spawner
-    lastImpulse: 0,  // follower
-    lastShot: 0,     // hitter
+    lastSpawn: 0,
+    lastImpulse: 0,
+    lastShot: 0,
     isEnemyBullet: false,
+    // bullet travel tracking
+    spawnX: x, spawnY: y,
+    maxTravel: 9999,    // set properly in spawnBullet
+    baseDamage: 1,      // set properly in spawnBullet
+    currentDamage: 1,
   };
 }
 
@@ -185,40 +208,38 @@ function makeEntity(type, variant, x, y, w, h, vx, vy, mass, color) {
 // POOL
 // ================================================================
 const pool = [];
+
 function buildEnemyGfx(e) {
   const g = new PIXI.Graphics();
-  g.beginFill(e.color);
   if (e.variant === 'enemy_spawner') {
-    // Hexágono grande con núcleo brillante
+    g.beginFill(e.color);
     const hw = e.halfW, hh = e.halfH;
     g.drawPolygon([hw,0, e.w,hh*0.5, e.w,hh*1.5, hw,e.h, 0,hh*1.5, 0,hh*0.5]);
     g.endFill();
-    // Núcleo central más claro
     g.beginFill(0xdd88ff, 0.8);
-    g.drawCircle(hw, hh, hw * 0.45);
+    g.drawCircle(hw, hh, hw * 0.42);
     g.endFill();
-    // Anillo exterior
     g.lineStyle(3, 0xee66ff, 1);
     g.drawCircle(hw, hh, hw - 2);
   } else if (e.variant === 'enemy_follower') {
-    // Rombo con trazo interior
+    g.beginFill(e.color);
     const hw = e.halfW, hh = e.halfH;
     g.drawPolygon([hw,0, e.w,hh, hw,e.h, 0,hh]);
     g.endFill();
     g.lineStyle(2, 0xaaffcc, 0.9);
     g.drawPolygon([hw,3, e.w-3,hh, hw,e.h-3, 3,hh]);
   } else if (e.variant === 'enemy_hitter') {
-    // Cruz / mira
-    const hw = e.halfW, hh = e.halfH;
+    g.beginFill(e.color);
     g.drawRect(0, 0, e.w, e.h);
     g.endFill();
     g.beginFill(0xffaaaa, 0.9);
-    g.drawRect(hw-2, 2, 4, e.h-4);
-    g.drawRect(2, hh-2, e.w-4, 4);
+    g.drawRect(e.halfW-2, 2, 4, e.h-4);
+    g.drawRect(2, e.halfH-2, e.w-4, 4);
     g.endFill();
     g.lineStyle(2, 0xff0000, 0.8);
-    g.drawCircle(hw, hh, hw - 2);
+    g.drawCircle(e.halfW, e.halfH, e.halfW - 2);
   } else {
+    g.beginFill(e.color);
     g.drawRect(0, 0, e.w, e.h);
     g.endFill();
   }
@@ -282,33 +303,98 @@ function spawnPlayer() {
 }
 
 function spawnBullet(x, y, vx, vy, btype, isEnemyBullet) {
-  let col, mass, bs;
+  let col, mass, bs, baseDamage, maxTravel;
   if (isEnemyBullet) {
     col = ENEMY_BULLET_COLOR; mass = ENEMY_BULLET_MASS; bs = ENEMY_BULLET_SIZE;
+    baseDamage = HITTER_BULLET_DAMAGE;
+    maxTravel  = ENEMY_BULLET_TRAVEL;
     btype = "enemy";
   } else {
-    col  = COLOR["bullet_" + btype] ?? 0xffff00;
-    mass = BULLET_MASS[btype] ?? 0.3;
-    bs   = BULLET_SIZE[btype] ?? 6;
+    col        = COLOR["bullet_" + btype] ?? 0xffff00;
+    mass       = BULLET_MASS[btype] ?? 0.3;
+    bs         = BULLET_SIZE[btype] ?? 6;
+    baseDamage = BULLET_DAMAGE[btype] ?? 1;
+    maxTravel  = W() * BULLET_MAX_TRAVEL_FRAC;
   }
   const e = makeEntity(TYPE.BULLET,"bullet_"+btype,x,y,bs,bs,vx,vy,mass,col);
   e.isEnemyBullet = !!isEnemyBullet;
+  e.spawnX = x; e.spawnY = y;
+  e.maxTravel = maxTravel;
+  e.baseDamage = baseDamage;
+  e.currentDamage = baseDamage;
+  e.baseMass = mass;
   return addToPool(e);
+}
+
+// ================================================================
+// BULLET TRAVEL & FADE
+// ================================================================
+function updateBulletFade() {
+  for (let i = 0; i < pool.length; i++) {
+    const e = pool[i];
+    if (!e.alive || e.type !== TYPE.BULLET || e.isEnemyBullet) continue;
+
+    const dx = e.x - e.spawnX, dy = e.y - e.spawnY;
+    const traveled = Math.sqrt(dx*dx + dy*dy);
+    const maxT = e.maxTravel;
+
+    if (traveled >= maxT) {
+      e.alive = false;
+      continue;
+    }
+
+    const t = traveled / maxT;               // 0→1
+    const fadeStart = BULLET_FADE_START_FRAC;
+
+    if (t > fadeStart) {
+      const f = (t - fadeStart) / (1 - fadeStart); // 0→1 dentro de la zona de fade
+      const strength = 1 - f;                       // 1→0
+
+      // Daño actual interpolado
+      e.currentDamage = e.baseDamage * (BULLET_MIN_DAMAGE_FRAC + strength * (1 - BULLET_MIN_DAMAGE_FRAC));
+
+      // Masa actual (afecta al impulso físico)
+      const newMass = e.baseMass * (BULLET_MIN_MASS_FRAC + strength * (1 - BULLET_MIN_MASS_FRAC));
+      e.mass    = newMass;
+      e.invMass = newMass > 0 ? 1 / newMass : 0;
+
+      // Alpha visual
+      if (e.gfx) e.gfx.alpha = Math.max(0.05, strength);
+
+    } else {
+      e.currentDamage = e.baseDamage;
+      e.mass    = e.baseMass;
+      e.invMass = e.baseMass > 0 ? 1 / e.baseMass : 0;
+      if (e.gfx) e.gfx.alpha = 1;
+    }
+  }
 }
 
 // ================================================================
 // EFECTOS VISUALES ESPECIALES
 // ================================================================
-// Ondas expansivas del spawner
-const pulses = [];  // { gfx, x, y, life, maxLife, maxR }
 
+// --- Ondas expansivas del spawner ---
+const pulses = [];
 function spawnSpawnerPulse(x, y) {
-  const g = new PIXI.Graphics();
-  app.stage.addChild(g);
-  pulses.push({ gfx:g, x, y, life: SPAWNER_PULSE_DURATION, maxLife: SPAWNER_PULSE_DURATION, maxR: SPAWNER_PULSE_RADIUS });
+  for (let wave = 0; wave < SPAWNER_PULSE_COUNT; wave++) {
+    const delay = wave * 90;  // cada onda desfasada 90ms
+    setTimeout(() => {
+      const g = new PIXI.Graphics();
+      app.stage.addChild(g);
+      pulses.push({
+        gfx: g, x, y,
+        life: SPAWNER_PULSE_DURATION,
+        maxLife: SPAWNER_PULSE_DURATION,
+        maxR: SPAWNER_PULSE_RADIUS * (0.5 + wave * 0.35),  // radios distintos
+        color: wave % 2 === 0 ? 0xdd44ff : 0xff88ff,
+        lineW: wave === 0 ? 3.5 : 2,
+      });
+    }, delay);
+  }
 }
 
-function updatePulses(dt) {
+function updatePulses() {
   for (let i = pulses.length - 1; i >= 0; i--) {
     const p = pulses[i];
     p.life -= app.ticker.deltaMS;
@@ -316,44 +402,54 @@ function updatePulses(dt) {
       app.stage.removeChild(p.gfx); p.gfx.destroy();
       pulses.splice(i, 1); continue;
     }
-    const t = 1 - p.life / p.maxLife;  // 0→1
+    const t = 1 - p.life / p.maxLife;  // 0→1 con el tiempo
     const r = p.maxR * t;
-    const alpha = (1 - t) * 0.7;
+    const alpha = (1 - t) * 0.85;
     p.gfx.clear();
-    p.gfx.lineStyle(3, 0xdd44ff, alpha);
+    p.gfx.lineStyle(p.lineW, p.color, alpha);
     p.gfx.drawCircle(p.x, p.y, r);
-    // Segunda onda más pequeña desfasada
-    const r2 = p.maxR * Math.max(0, t - 0.25);
-    if (r2 > 0) {
-      p.gfx.lineStyle(1.5, 0xff88ff, alpha * 0.5);
-      p.gfx.drawCircle(p.x, p.y, r2);
-    }
+    // Relleno tenue
+    p.gfx.beginFill(p.color, alpha * 0.12);
+    p.gfx.drawCircle(p.x, p.y, r);
+    p.gfx.endFill();
   }
 }
 
-// Flash de impulso del follower
-const impulseFlashes = [];  // { gfx, x, y, life, maxLife }
+// --- Flash de impulso del follower ---
+const impulseFlashes = [];
 function spawnImpulseFlash(x, y) {
+  // Varias líneas radiales + círculo expansivo
   const g = new PIXI.Graphics();
   app.stage.addChild(g);
-  impulseFlashes.push({ gfx:g, x, y, life:300, maxLife:300 });
+  impulseFlashes.push({ gfx:g, x, y, life:380, maxLife:380 });
 }
+
 function updateImpulseFlashes() {
-  for (let i = impulseFlashes.length-1; i >= 0; i--) {
+  for (let i = impulseFlashes.length - 1; i >= 0; i--) {
     const f = impulseFlashes[i];
     f.life -= app.ticker.deltaMS;
     if (f.life <= 0) {
       app.stage.removeChild(f.gfx); f.gfx.destroy();
       impulseFlashes.splice(i, 1); continue;
     }
-    const t = f.life / f.maxLife;
-    const r = 28 * (1 - t);
+    const t = f.life / f.maxLife;   // 1→0
+    const r = 36 * (1 - t);
     f.gfx.clear();
-    f.gfx.lineStyle(2 + t * 3, 0x44ffaa, t);
+    // Círculo exterior
+    f.gfx.lineStyle(2.5 + t * 2, 0x44ffaa, t * 0.9);
     f.gfx.drawCircle(f.x, f.y, r);
-    f.gfx.beginFill(0x44ffaa, t * 0.25);
+    f.gfx.beginFill(0x44ffaa, t * 0.18);
     f.gfx.drawCircle(f.x, f.y, r);
     f.gfx.endFill();
+    // Líneas radiales
+    const spokes = 6;
+    f.gfx.lineStyle(1.5, 0xaaffcc, t * 0.7);
+    for (let s = 0; s < spokes; s++) {
+      const angle = (s / spokes) * Math.PI * 2;
+      const innerR = r * 0.3;
+      f.gfx.moveTo(f.x + Math.cos(angle)*innerR, f.y + Math.sin(angle)*innerR);
+      f.gfx.lineTo(f.x + Math.cos(angle)*r,      f.y + Math.sin(angle)*r);
+    }
   }
 }
 
@@ -367,9 +463,9 @@ let phaseActive    = false;
 const elPhaseTimer = document.getElementById("phaseTimer");
 const elPhaseLabel = document.getElementById("phaseLabel");
 
-function timerColor(secsLeft) {
-  if (secsLeft > 15) return "#00ffcc";
-  if (secsLeft > 8)  return "#ffcc00";
+function timerColor(s) {
+  if (s > 15) return "#00ffcc";
+  if (s > 8)  return "#ffcc00";
   return "#ff4444";
 }
 
@@ -377,13 +473,10 @@ function startPhase(n, now) {
   currentPhase   = n;
   phaseStartTime = now;
   phaseActive    = true;
-
-  // Añadir enemigos de esta fase SIN eliminar los anteriores
   const config = PHASE_ADD_ENEMIES[n] ?? {};
   for (const [variant, count] of Object.entries(config)) {
     for (let i = 0; i < count; i++) spawnEnemy(variant);
   }
-
   elPhaseLabel.textContent = "FASE " + n + " / " + TOTAL_PHASES;
 }
 
@@ -391,11 +484,9 @@ function phaseUpdate(now) {
   if (!phaseActive) return;
   const remaining = Math.max(0, PHASE_DURATION_MS - (now - phaseStartTime));
   const secsLeft  = Math.ceil(remaining / 1000);
-
   elPhaseTimer.textContent = secsLeft;
   elPhaseTimer.style.color = timerColor(secsLeft);
   elPhaseTimer.style.textShadow = `0 0 16px ${timerColor(secsLeft)}, 0 0 4px #fff`;
-
   if (remaining <= 0) {
     if (currentPhase < TOTAL_PHASES) {
       startPhase(currentPhase + 1, now);
@@ -413,7 +504,6 @@ function phaseUpdate(now) {
 // ================================================================
 function enemyAI(now) {
   if (!player || !player.alive) return;
-
   for (let i = 0; i < pool.length; i++) {
     const e = pool[i];
     if (!e.alive || e.type !== TYPE.ENEMY) continue;
@@ -422,31 +512,41 @@ function enemyAI(now) {
     if (e.variant === 'enemy_spawner') {
       if (now - e.lastSpawn >= SPAWNER_SPAWN_INTERVAL_MS) {
         e.lastSpawn = now;
-        // Onda expansiva visual
+
+        // Onda expansiva triple muy visible
         spawnSpawnerPulse(e.x, e.y);
-        // Segundo pulso ligeramente retrasado
-        setTimeout(() => spawnSpawnerPulse(e.x, e.y), 120);
-        // Parpadeo del spawner
+
+        // Parpadeo intenso del propio spawner
         if (e.gfx) {
-          e.gfx.tint = 0xffffff;
-          setTimeout(() => { if (e.gfx) e.gfx.tint = 0xffffff; }, 200);
+          let blink = 0;
+          const blinkInterval = setInterval(() => {
+            if (!e.gfx) { clearInterval(blinkInterval); return; }
+            e.gfx.alpha = blink % 2 === 0 ? 0.2 : 1.0;
+            blink++;
+            if (blink > 5) { e.gfx.alpha = 1; clearInterval(blinkInterval); }
+          }, 80);
         }
-        // Spawn del enemigo
-        const angle = Math.random() * Math.PI * 2;
-        const dist  = 40 + Math.random() * 25;
-        const sx = Math.max(30, Math.min(W()-30, e.x + Math.cos(angle) * dist));
-        const sy = Math.max(30, Math.min(H()-30, e.y + Math.sin(angle) * dist));
-        spawnEnemy(SPAWNER_SPAWN_VARIANT, sx, sy);
+
+        // Spawn del enemigo en desfase para que coincida con la onda
+        setTimeout(() => {
+          const angle = Math.random() * Math.PI * 2;
+          const dist  = 40 + Math.random() * 25;
+          const sx = Math.max(30, Math.min(W()-30, e.x + Math.cos(angle) * dist));
+          const sy = Math.max(30, Math.min(H()-30, e.y + Math.sin(angle) * dist));
+          spawnEnemy(SPAWNER_SPAWN_VARIANT, sx, sy);
+        }, 150);
       }
-      // Pulso de scale para indicar vida
+
+      // Pulso de escala continuo
       if (e.gfx) {
-        const sc = 1 + 0.06 * Math.sin(now / 400 + e.id);
+        const sc = 1 + 0.07 * Math.sin(now / 380 + e.id);
         e.gfx.scale.set(sc);
       }
+
       // Deriva si se queda quieto
       if (Math.abs(e.vx) < 0.4 && Math.abs(e.vy) < 0.4) {
-        e.vx = (Math.random() - 0.5) * 1.8;
-        e.vy = (Math.random() - 0.5) * 1.8;
+        e.vx = (Math.random()-0.5) * 1.8;
+        e.vy = (Math.random()-0.5) * 1.8;
         e.sleeping = false; e.sleepN = 0;
       }
     }
@@ -455,23 +555,15 @@ function enemyAI(now) {
     if (e.variant === 'enemy_follower') {
       if (now - e.lastImpulse >= FOLLOWER_IMPULSE_INTERVAL_MS) {
         e.lastImpulse = now;
-
-        // Dirección exacta hacia el player en este instante
-        const dx = player.x - e.x;
-        const dy = player.y - e.y;
+        const dx = player.x - e.x, dy = player.y - e.y;
         const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-        const nx = dx / dist, ny = dy / dist;
-
-        // Frenar velocidad previa casi por completo, luego lanzar hacia el player
+        const nx = dx/dist, ny = dy/dist;
+        // Frena velocidad previa casi del todo, luego lanza directo al player
         e.vx = e.vx * FOLLOWER_BRAKE_FACTOR + nx * FOLLOWER_IMPULSE_SPEED;
         e.vy = e.vy * FOLLOWER_BRAKE_FACTOR + ny * FOLLOWER_IMPULSE_SPEED;
         e.sleeping = false; e.sleepN = 0;
-
-        // Flash visual de impulso
         spawnImpulseFlash(e.x, e.y);
-        if (e.gfx) { e.gfx.tint = 0xffffff; setTimeout(()=>{ if(e.gfx) e.gfx.tint = 0xffffff; }, 150); }
       }
-      // Alpha pulsante
       if (e.gfx) e.gfx.alpha = 0.65 + 0.35 * Math.sin(now / 250 + e.id);
     }
 
@@ -479,55 +571,58 @@ function enemyAI(now) {
     if (e.variant === 'enemy_hitter') {
       if (now - e.lastShot >= HITTER_SHOOT_INTERVAL_MS) {
         e.lastShot = now;
-
-        // Vector normalizado hacia la posición ACTUAL del jugador
-        const dx = player.x - e.x;
-        const dy = player.y - e.y;
+        const dx = player.x - e.x, dy = player.y - e.y;
         const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-        const nx = dx / dist, ny = dy / dist;
-
-        // Offset: salir desde el borde del hitter
+        const nx = dx/dist, ny = dy/dist;
         const offset = Math.max(e.halfW, e.halfH) + ENEMY_BULLET_SIZE + 2;
-        spawnBullet(
-          e.x + nx * offset,
-          e.y + ny * offset,
-          nx * HITTER_BULLET_SPEED,
-          ny * HITTER_BULLET_SPEED,
-          null, true  // isEnemyBullet = true
-        );
-        // Retroceso leve del hitter al disparar
+        spawnBullet(e.x + nx*offset, e.y + ny*offset, nx*HITTER_BULLET_SPEED, ny*HITTER_BULLET_SPEED, null, true);
         e.vx -= nx * 1.5 * e.invMass;
         e.vy -= ny * 1.5 * e.invMass;
         e.sleeping = false; e.sleepN = 0;
-        // Flash visual
-        if (e.gfx) { e.gfx.tint = 0xffffff; setTimeout(()=>{ if(e.gfx) e.gfx.tint = 0xffffff; },100); }
+        if (e.gfx) {
+          e.gfx.tint = 0xffffff;
+          setTimeout(()=>{ if(e.gfx) e.gfx.tint = 0xffffff; }, 100);
+        }
       }
-      // Rotación lenta
       if (e.gfx) e.gfx.rotation = (now / 2000) % (Math.PI * 2);
     }
   }
 }
 
 // ================================================================
-// FRAGMENTOS DE IMPACTO
+// FRAGMENTOS DE IMPACTO (mejorados)
 // ================================================================
-const fragments = [];
-const exhaust   = [];
+const fragments  = [];
+const exhaust    = [];
 let   lastExhaust = 0;
 
-function spawnFragments(x, y, bvx, bvy, color) {
-  for (let i = 0; i < FRAG_COUNT; i++) {
+function spawnFragments(x, y, bvx, bvy, color, count) {
+  const n = count ?? (FRAG_COUNT_MIN + Math.floor(Math.random() * (FRAG_COUNT_MAX - FRAG_COUNT_MIN + 1)));
+  for (let i = 0; i < n; i++) {
     const angle = Math.random() * Math.PI * 2;
-    const spd   = 1.5 + Math.random() * 3;
+    const spd   = FRAG_SPEED_MIN + Math.random() * (FRAG_SPEED_MAX - FRAG_SPEED_MIN);
+    const sz    = FRAG_SIZE_MIN + Math.random() * (FRAG_SIZE_MAX - FRAG_SIZE_MIN);
     const g = new PIXI.Graphics();
-    g.beginFill(color); g.drawRect(-1.5,-1.5,3,3); g.endFill();
-    g.x = x; g.y = y;
+    // Mix: algunos cuadrados, algunos círculos para variedad
+    if (Math.random() > 0.5) {
+      g.beginFill(color); g.drawRect(-sz/2,-sz/2,sz,sz); g.endFill();
+    } else {
+      g.beginFill(color); g.drawCircle(0,0,sz*0.55); g.endFill();
+    }
+    // Partícula luminosa central
+    if (Math.random() > 0.7) {
+      g.beginFill(0xffffff, 0.8); g.drawCircle(0,0,sz*0.25); g.endFill();
+    }
+    g.x = x + (Math.random()-0.5)*6; g.y = y + (Math.random()-0.5)*6;
     app.stage.addChild(g);
     fragments.push({
-      gfx:g,
-      vx: Math.cos(angle)*spd + bvx*0.15,
-      vy: Math.sin(angle)*spd + bvy*0.15,
-      x, y, life: FRAG_DURATION, maxLife: FRAG_DURATION
+      gfx: g,
+      vx: Math.cos(angle)*spd + bvx*0.2,
+      vy: Math.sin(angle)*spd + bvy*0.2,
+      x: g.x, y: g.y,
+      life: FRAG_DURATION * (0.6 + Math.random()*0.8),
+      maxLife: FRAG_DURATION,
+      rotSpeed: (Math.random()-0.5)*0.3,
     });
   }
 }
@@ -542,9 +637,10 @@ function updateFragments(dt) {
     }
     f.x += f.vx * dt; f.y += f.vy * dt;
     f.gfx.x = f.x; f.gfx.y = f.y;
+    f.gfx.rotation += f.rotSpeed;
     const t = f.life / f.maxLife;
     f.gfx.alpha = t * t;
-    f.vx *= 0.88; f.vy *= 0.88;
+    f.vx *= 0.86; f.vy *= 0.86;
   }
 }
 
@@ -591,7 +687,7 @@ function updateExhaust(dt) {
 // ENERGY BARS
 // ================================================================
 const energyBars = new Map();
-const BAR_W = 36, BAR_H = 4, BAR_YOFF = 10;
+const BAR_YOFF = 10;
 
 function showEnergyBar(entity, now) {
   let bar = energyBars.get(entity.id);
@@ -613,14 +709,14 @@ function updateEnergyBars(now) {
     }
     const frac     = Math.max(0, e.energy / e.maxEnergy);
     const timeLeft = (bar.expireAt - now) / ENERGY_BAR_DURATION;
-    const alpha    = timeLeft < 0.3 ? timeLeft / 0.3 : 1.0;
+    const alpha    = timeLeft < 0.3 ? timeLeft/0.3 : 1.0;
+    const bw       = Math.max(36, e.w);
     const g = bar.gfx; g.clear();
-    const bw = Math.max(BAR_W, e.w);
     g.beginFill(0x222222, 0.7*alpha);
-    g.drawRect(e.x-bw/2, e.y+e.halfH+BAR_YOFF, bw, BAR_H); g.endFill();
+    g.drawRect(e.x-bw/2, e.y+e.halfH+BAR_YOFF, bw, 4); g.endFill();
     const r = Math.round(255*(1-frac)), gv = Math.round(200*frac);
     g.beginFill((r<<16)|(gv<<8), alpha);
-    g.drawRect(e.x-bw/2, e.y+e.halfH+BAR_YOFF, bw*frac, BAR_H); g.endFill();
+    g.drawRect(e.x-bw/2, e.y+e.halfH+BAR_YOFF, bw*frac, 4); g.endFill();
   }
 }
 
@@ -630,12 +726,7 @@ function updateEnergyBars(now) {
 function syncGraphics() {
   for (let i = 0; i < pool.length; i++) {
     const e = pool[i];
-    if (e.gfx && e.variant !== 'enemy_hitter') {
-      // hitter rota, no sobreescribir rotation
-      e.gfx.x = e.x; e.gfx.y = e.y;
-    } else if (e.gfx) {
-      e.gfx.x = e.x; e.gfx.y = e.y;
-    }
+    if (e.gfx) { e.gfx.x = e.x; e.gfx.y = e.y; }
   }
 }
 
@@ -643,23 +734,23 @@ function syncGraphics() {
 // COLLISION LOGIC
 // ================================================================
 let score = 0;
-let playerHPBarExpiry = 0;
-let shieldBarExpiry   = 0;
-let shieldActive      = false;
-let shieldUsedMs      = 0;
+let playerHPBarExpiry   = 0;
+let shieldBarExpiry     = 0;
+let shieldActive        = false;
+let shieldUsedMs        = 0;
 let shieldCooldownUntil = 0;
-const shieldHitMap    = new Map();
+const shieldHitMap      = new Map();
 
 function onEnemyDeath(enemy) {
   score += 10;
   if (enemy.variant === 'enemy_boss') {
-    for (let i=0;i<4;i++) spawnEnemy('enemy_heavy', enemy.x+(Math.random()-.5)*30, enemy.y+(Math.random()-.5)*30);
+    for (let i=0;i<4;i++) spawnEnemy('enemy_heavy',enemy.x+(Math.random()-.5)*30,enemy.y+(Math.random()-.5)*30);
   } else if (enemy.variant === 'enemy_heavy') {
-    for (let i=0;i<2;i++) spawnEnemy('enemy_basic', enemy.x+(Math.random()-.5)*20, enemy.y+(Math.random()-.5)*20);
+    for (let i=0;i<2;i++) spawnEnemy('enemy_basic',enemy.x+(Math.random()-.5)*20,enemy.y+(Math.random()-.5)*20);
   } else if (enemy.variant === 'enemy_spawner') {
     spawnSpawnerPulse(enemy.x, enemy.y);
-    spawnSpawnerPulse(enemy.x, enemy.y);
-    for (let i=0;i<SPAWNER_DEATH_RELEASE;i++) spawnEnemy('enemy_heavy', enemy.x+(Math.random()-.5)*50, enemy.y+(Math.random()-.5)*50);
+    setTimeout(()=> spawnSpawnerPulse(enemy.x, enemy.y), 180);
+    for (let i=0;i<SPAWNER_DEATH_RELEASE;i++) spawnEnemy('enemy_heavy',enemy.x+(Math.random()-.5)*50,enemy.y+(Math.random()-.5)*50);
   }
 }
 
@@ -669,13 +760,12 @@ function onCollision(a, b, ox, oy, now) {
     const other  = a.type===TYPE.BULLET ? b : a;
     if (!bullet.alive) return;
 
-    // Bala enemiga solo daña al player (no a otros enemigos)
     if (bullet.isEnemyBullet) {
       if (other.type === TYPE.WALL)   { bullet.alive = false; return; }
       if (other.type === TYPE.PLAYER) {
         if (now - other.lastHit > HIT_CD_MS) {
           other.lastHit = now;
-          other.energy -= HITTER_BULLET_DAMAGE;
+          other.energy -= bullet.currentDamage;
           if (other.energy <= 0) other.alive = false;
           playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
           shieldBarExpiry   = now + PLAYER_HP_BAR_DURATION;
@@ -684,15 +774,17 @@ function onCollision(a, b, ox, oy, now) {
         applyBulletImpulse(bullet, other);
         bullet.alive = false;
       }
-      if (other.type === TYPE.ENEMY)  { bullet.alive = false; }  // atraviesa compañeros
+      if (other.type === TYPE.ENEMY) { bullet.alive = false; }
       return;
     }
 
     // Bala del jugador
-    if (other.type === TYPE.WALL) { bullet.alive = false; return; }
+    if (other.type === TYPE.WALL) {
+      spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, 0x888888, 5);
+      bullet.alive = false; return;
+    }
     if (other.type === TYPE.ENEMY) {
-      const btype = bullet.variant.replace("bullet_","");
-      other.energy -= BULLET_DAMAGE[btype] ?? 1;
+      other.energy -= bullet.currentDamage;
       if (other.energy <= 0) { other.alive = false; onEnemyDeath(other); }
       showEnergyBar(other, now);
       spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, ENEMY_COLOR[other.variant] ?? 0xffffff);
@@ -702,8 +794,7 @@ function onCollision(a, b, ox, oy, now) {
     bullet.alive = false; return;
   }
 
-  // Contacto enemigo-jugador
-  if ((a.type===TYPE.ENEMY && b.type===TYPE.PLAYER) ||
+  if ((a.type===TYPE.ENEMY && b.type===TYPE.PLAYER)||
       (a.type===TYPE.PLAYER && b.type===TYPE.ENEMY)) {
     const pl    = a.type===TYPE.PLAYER ? a : b;
     const enemy = a.type===TYPE.ENEMY  ? a : b;
@@ -722,88 +813,87 @@ function applyBulletImpulse(bullet, other) {
   const speed = Math.sqrt(bullet.vx*bullet.vx + bullet.vy*bullet.vy) || 1;
   const nx = bullet.vx/speed, ny = bullet.vy/speed;
   const dvx = other.vx-bullet.vx, dvy = other.vy-bullet.vy;
-  const vn  = Math.min(dvx*nx + dvy*ny, -speed*0.5);
+  const vn  = Math.min(dvx*nx+dvy*ny, -speed*0.5);
   const invSum = bullet.invMass + other.invMass;
   if (invSum === 0) return;
   other.sleeping = false; other.sleepN = 0;
-  const j = -(1 + Math.min(bullet.restitution, other.restitution)) * vn / invSum;
+  const j = -(1 + Math.min(bullet.restitution,other.restitution)) * vn / invSum;
   other.vx += j*nx*other.invMass; other.vy += j*ny*other.invMass;
 }
 
 function applyImpulse(a, b, ox, oy) {
-  let nx = 0, ny = 0;
-  if (ox < oy) nx = b.x>a.x ? 1 : -1; else ny = b.y>a.y ? 1 : -1;
-  const dvx = b.vx-a.vx, dvy = b.vy-a.vy;
-  const vn  = dvx*nx + dvy*ny;
+  let nx=0, ny=0;
+  if (ox < oy) nx = b.x>a.x ? 1:-1; else ny = b.y>a.y ? 1:-1;
+  const dvx=b.vx-a.vx, dvy=b.vy-a.vy, vn=dvx*nx+dvy*ny;
   if (vn > 0) return;
-  const invSum = a.invMass + b.invMass;
-  if (invSum === 0) return;
-  a.sleeping = b.sleeping = false; a.sleepN = b.sleepN = 0;
-  const rest = Math.min(a.restitution, b.restitution);
-  const j    = -(1+rest)*vn/invSum;
-  a.vx -= j*nx*a.invMass; a.vy -= j*ny*a.invMass;
-  b.vx += j*nx*b.invMass; b.vy += j*ny*b.invMass;
-  const tx = -ny, ty = nx, vt = dvx*tx + dvy*ty;
-  const mu = Math.sqrt(a.friction*b.friction);
-  const jt = Math.abs(vt) < j*mu ? -vt/invSum : -j*mu*Math.sign(vt);
-  a.vx += jt*tx*a.invMass; a.vy += jt*ty*a.invMass;
-  b.vx -= jt*tx*b.invMass; b.vy -= jt*ty*b.invMass;
-  const corr = Math.max(Math.min(ox,oy)-0.5, 0)/invSum*0.4;
-  a.x -= corr*nx*a.invMass; a.y -= corr*ny*a.invMass;
-  b.x += corr*nx*b.invMass; b.y += corr*ny*b.invMass;
+  const invSum=a.invMass+b.invMass;
+  if (invSum===0) return;
+  a.sleeping=b.sleeping=false; a.sleepN=b.sleepN=0;
+  const rest=Math.min(a.restitution,b.restitution);
+  const j=-(1+rest)*vn/invSum;
+  a.vx-=j*nx*a.invMass; a.vy-=j*ny*a.invMass;
+  b.vx+=j*nx*b.invMass; b.vy+=j*ny*b.invMass;
+  const tx=-ny,ty=nx,vt=dvx*tx+dvy*ty;
+  const mu=Math.sqrt(a.friction*b.friction);
+  const jt=Math.abs(vt)<j*mu?-vt/invSum:-j*mu*Math.sign(vt);
+  a.vx+=jt*tx*a.invMass; a.vy+=jt*ty*a.invMass;
+  b.vx-=jt*tx*b.invMass; b.vy-=jt*ty*b.invMass;
+  const corr=Math.max(Math.min(ox,oy)-0.5,0)/invSum*0.4;
+  a.x-=corr*nx*a.invMass; a.y-=corr*ny*a.invMass;
+  b.x+=corr*nx*b.invMass; b.y+=corr*ny*b.invMass;
 }
 
 // ================================================================
 // PHYSICS STEP
 // ================================================================
 function physicsStep(dt, now) {
-  const sw = W(), sh = H();
-  for (let i = 0; i < pool.length; i++) {
-    const e = pool[i];
-    if (!e.alive || e.invMass===0 || e.sleeping) continue;
-    e.x += e.vx*dt; e.y += e.vy*dt;
-    if (e.type === TYPE.BULLET) {
-      if (e.x<-40||e.x>sw+40||e.y<-40||e.y>sh+40) e.alive = false;
+  const sw=W(), sh=H();
+  for (let i=0; i<pool.length; i++) {
+    const e=pool[i];
+    if (!e.alive||e.invMass===0||e.sleeping) continue;
+    e.x+=e.vx*dt; e.y+=e.vy*dt;
+    if (e.type===TYPE.BULLET) {
+      if (e.x<-40||e.x>sw+40||e.y<-40||e.y>sh+40) e.alive=false;
       continue;
     }
-    if (e.x-e.halfW<0)   { e.x=e.halfW;      e.vx= Math.abs(e.vx); }
-    if (e.x+e.halfW>sw)  { e.x=sw-e.halfW;   e.vx=-Math.abs(e.vx); }
-    if (e.y-e.halfH<0)   { e.y=e.halfH;       e.vy= Math.abs(e.vy); }
-    if (e.y+e.halfH>sh)  { e.y=sh-e.halfH;   e.vy=-Math.abs(e.vy); }
-    const v2 = e.vx*e.vx + e.vy*e.vy;
-    if (v2 < SLEEP_THRESH) { if (++e.sleepN > SLEEP_FRAMES) { e.vx=e.vy=0; e.sleeping=true; } }
-    else { e.sleepN = 0; }
+    if (e.x-e.halfW<0)  {e.x=e.halfW;     e.vx= Math.abs(e.vx);}
+    if (e.x+e.halfW>sw) {e.x=sw-e.halfW;  e.vx=-Math.abs(e.vx);}
+    if (e.y-e.halfH<0)  {e.y=e.halfH;     e.vy= Math.abs(e.vy);}
+    if (e.y+e.halfH>sh) {e.y=sh-e.halfH;  e.vy=-Math.abs(e.vy);}
+    const v2=e.vx*e.vx+e.vy*e.vy;
+    if (v2<SLEEP_THRESH) { if(++e.sleepN>SLEEP_FRAMES){e.vx=e.vy=0;e.sleeping=true;} }
+    else { e.sleepN=0; }
   }
   // Shield force field
   if (player && player.alive && shieldActive) {
-    for (let i = 0; i < pool.length; i++) {
-      const e = pool[i];
-      if (!e.alive || e.type!==TYPE.ENEMY) continue;
+    for (let i=0; i<pool.length; i++) {
+      const e=pool[i];
+      if (!e.alive||e.type!==TYPE.ENEMY) continue;
       const sdx=e.x-player.x, sdy=e.y-player.y;
       const sdist=Math.sqrt(sdx*sdx+sdy*sdy);
       const minD=SHIELD_RADIUS+Math.max(e.halfW,e.halfH);
-      if (sdist<minD && sdist>0.01) {
+      if (sdist<minD&&sdist>0.01) {
         const snx=sdx/sdist, sny=sdy/sdist;
         e.vx+=snx*8*e.invMass; e.vy+=sny*8*e.invMass;
         e.x+=snx*(minD-sdist); e.y+=sny*(minD-sdist);
         e.sleeping=false; e.sleepN=0;
-        const lastSH = shieldHitMap.get(e.id) ?? 0;
-        if (now-lastSH > SHIELD_HIT_CD) {
-          shieldHitMap.set(e.id, now);
-          e.energy -= SHIELD_DAMAGE; showEnergyBar(e, now);
-          if (e.energy<=0) { e.alive=false; onEnemyDeath(e); }
+        const lastSH=shieldHitMap.get(e.id)??0;
+        if (now-lastSH>SHIELD_HIT_CD) {
+          shieldHitMap.set(e.id,now);
+          e.energy-=SHIELD_DAMAGE; showEnergyBar(e,now);
+          if (e.energy<=0){e.alive=false;onEnemyDeath(e);}
         }
       }
     }
   }
   // Broadphase
-  const alive = pool.filter(e => e.alive);
-  alive.sort((a,b) => a.x-a.halfW-(b.x-b.halfW));
+  const alive=pool.filter(e=>e.alive);
+  alive.sort((a,b)=>a.x-a.halfW-(b.x-b.halfW));
   for (let i=0; i<alive.length; i++) {
     const a=alive[i], aRight=a.x+a.halfW;
     for (let j=i+1; j<alive.length; j++) {
       const b=alive[j];
-      if (b.x-b.halfW > aRight) break;
+      if (b.x-b.halfW>aRight) break;
       const ox=(a.halfW+b.halfW)-Math.abs(b.x-a.x);
       const oy=(a.halfH+b.halfH)-Math.abs(b.y-a.y);
       if (ox<=0||oy<=0) continue;
@@ -818,7 +908,7 @@ function physicsStep(dt, now) {
 const keys  = {};
 const mouse = { x:0, y:0, down:false };
 let player = null, lastShot = 0, currentWeapon = "normal";
-let gameOver=false, paused=false;
+let gameOver = false, paused = false;
 
 window.addEventListener("keydown", e => {
   if (e.code==="KeyP") { paused=!paused; elInfo.textContent=paused?"[PAUSA] - press P to continue":""; return; }
@@ -826,6 +916,13 @@ window.addEventListener("keydown", e => {
   if (e.code==="Digit2") { currentWeapon="heavy";  return; }
   if (e.code==="Digit3") { currentWeapon="laser";  return; }
   if (e.code==="Space")  { keys["Space"]=true; return; }
+  // Spawn manual de enemigos
+  if (e.code==="KeyZ") { spawnEnemy("enemy_basic");   return; }
+  if (e.code==="KeyX") { spawnEnemy("enemy_heavy");   return; }
+  if (e.code==="KeyC") { spawnEnemy("enemy_boss");    return; }
+  if (e.code==="KeyV") { spawnEnemy("enemy_spawner"); return; }
+  if (e.code==="KeyB") { spawnEnemy("enemy_follower");return; }
+  if (e.code==="KeyN") { spawnEnemy("enemy_hitter");  return; }
   keys[e.code]=true; e.preventDefault();
 });
 window.addEventListener("keyup",     e => { keys[e.code]=false; });
@@ -834,32 +931,45 @@ window.addEventListener("mousedown", e => { if(e.button===0) mouse.down=true;  }
 window.addEventListener("mouseup",   e => { if(e.button===0) mouse.down=false; });
 
 function inputUpdate(now) {
-  if (!player || !player.alive) return;
+  if (!player||!player.alive) return;
   let tx=0, ty=0;
   const left=keys.KeyA||keys.ArrowLeft, right=keys.KeyD||keys.ArrowRight;
   const up=keys.KeyW||keys.ArrowUp,     down=keys.KeyS||keys.ArrowDown;
-  if (left)  tx-=PLAYER_SPEED; if (right) tx+=PLAYER_SPEED;
-  if (up)    ty-=PLAYER_SPEED; if (down)  ty+=PLAYER_SPEED;
-  if (left||right||up||down) {
+  if(left)  tx-=PLAYER_SPEED; if(right) tx+=PLAYER_SPEED;
+  if(up)    ty-=PLAYER_SPEED; if(down)  ty+=PLAYER_SPEED;
+  if(left||right||up||down){
     player.vx+=(tx-player.vx)*PLAYER_ACCEL;
     player.vy+=(ty-player.vy)*PLAYER_ACCEL;
   } else { player.vx*=PLAYER_DAMPING; player.vy*=PLAYER_DAMPING; }
   player.sleeping=false; player.sleepN=0;
-  // Shield
-  const spDown=keys["Space"], shieldAvail=SHIELD_MAX_MS-shieldUsedMs, cdDone=now>=shieldCooldownUntil;
-  if (spDown && shieldAvail>0 && cdDone) {
-    if (!shieldActive) shieldActive=true;
-    shieldUsedMs=Math.min(SHIELD_MAX_MS, shieldUsedMs+app.ticker.deltaMS);
-    shieldBarExpiry=now+3500;
-    if (shieldUsedMs>=SHIELD_MAX_MS) { shieldActive=false; shieldCooldownUntil=now+SHIELD_COOLDOWN; }
+
+  // --- SHIELD: se puede activar con cualquier carga disponible ---
+  const spDown = keys["Space"];
+  const hasCharge = shieldUsedMs < SHIELD_MAX_MS;            // queda algo de carga
+  const cdDone    = now >= shieldCooldownUntil;               // cooldown terminado
+  const canStart  = cdDone && hasCharge;                      // puede activarse
+
+  if (spDown && canStart) {
+    if (!shieldActive) shieldActive = true;
+    shieldUsedMs = Math.min(SHIELD_MAX_MS, shieldUsedMs + app.ticker.deltaMS);
+    shieldBarExpiry = now + 3500;
+    if (shieldUsedMs >= SHIELD_MAX_MS) {
+      shieldActive = false;
+      shieldCooldownUntil = now + SHIELD_COOLDOWN;
+    }
   } else {
     if (shieldActive) {
-      shieldActive=false;
-      shieldCooldownUntil=now+(shieldUsedMs/SHIELD_MAX_MS)*SHIELD_COOLDOWN;
-      shieldBarExpiry=now+SHIELD_COOLDOWN+500;
+      shieldActive = false;
+      // Si se soltó antes de agotar: cooldown proporcional al uso
+      shieldCooldownUntil = now + (shieldUsedMs / SHIELD_MAX_MS) * SHIELD_COOLDOWN;
+      shieldBarExpiry = now + SHIELD_COOLDOWN + 500;
     }
-    if (now>=shieldCooldownUntil && shieldUsedMs>0 && !shieldActive) shieldUsedMs=0;
+    // Recarga: cuando cooldown termina, limpiar el medidor para siguiente uso
+    if (now >= shieldCooldownUntil && shieldUsedMs > 0 && !shieldActive) {
+      shieldUsedMs = 0;
+    }
   }
+
   const weaponCD = currentWeapon==="laser"?80:currentWeapon==="heavy"?450:BULLET_CD_MS;
   if (mouse.down && now-lastShot>=weaponCD) {
     lastShot=now;
@@ -875,8 +985,9 @@ function inputUpdate(now) {
 // ================================================================
 // HUD
 // ================================================================
-const elFPS=document.getElementById("hFPS"), elInfo=document.getElementById("hInfo");
-let hudMs=0;
+const elFPS  = document.getElementById("hFPS");
+const elInfo = document.getElementById("hInfo");
+let hudMs = 0;
 
 function hudUpdate(now) {
   hudMs += app.ticker.deltaMS;
@@ -885,46 +996,71 @@ function hudUpdate(now) {
   elFPS.textContent = "FPS: "+app.ticker.FPS.toFixed(0)+"  objs: "+pool.length;
   if (gameOver) {
     elInfo.textContent = "GAME OVER - reload to play again";
-    elPhaseTimer.textContent = "✕"; elPhaseTimer.style.color="#ff4444";
-  } else if (paused) {
+    elPhaseTimer.textContent="✕"; elPhaseTimer.style.color="#ff4444";
     return;
-  } else if (player) {
+  }
+  if (paused) return;
+  if (player) {
     const wNames={normal:"1-Basic",heavy:"2-Heavy",laser:"3-Laser"};
     const wColors={normal:"#ffff33",heavy:"#ff8833",laser:"#33ffff"};
-    const cdLeft=shieldCooldownUntil>now?((shieldCooldownUntil-now)/1000).toFixed(1):null;
-    const shieldInfo=shieldActive?' <span style="color:#88ffff">[SHIELD ACTIVE]</span>':
-      shieldUsedMs===0?' <span style="color:#88ffff">[SPACE: shield]</span>':
-      cdLeft?' <span style="color:#999">shield recharge: '+cdLeft+'s</span>':
-      ' <span style="color:#88ffff">[shield ready]</span>';
-    elInfo.innerHTML="score: "+score+
+    const cdLeft = shieldCooldownUntil>now ? ((shieldCooldownUntil-now)/1000).toFixed(1) : null;
+    const shieldInfo = shieldActive
+      ? ' <span style="color:#88ffff">[SHIELD ACTIVE]</span>'
+      : shieldUsedMs===0
+        ? ' <span style="color:#88ffff">[SPACE: shield]</span>'
+        : cdLeft
+          ? ' <span style="color:#999">shield recharge: '+cdLeft+'s</span>'
+          : ' <span style="color:#88ffff">[shield ready]</span>';
+    elInfo.innerHTML = "score: "+score+
       '  weapon: <span style="color:'+wColors[currentWeapon]+'">'+wNames[currentWeapon]+'</span>'+
-      shieldInfo+"   WASD-click-1/2/3-SPACE";
+      shieldInfo+
+      '  <span style="color:#888">Z/X/C/V/B/N: spawn</span>'+
+      "   WASD-click-1/2/3-SPACE";
   }
 }
 
 // ================================================================
 // GRÁFICOS
 // ================================================================
-const aimLine=new PIXI.Graphics(); app.stage.addChild(aimLine);
+const aimLine = new PIXI.Graphics();
+app.stage.addChild(aimLine);
+
 function drawAimLine() {
   aimLine.clear();
   if (!player||!player.alive||gameOver) return;
   const dx=mouse.x-player.x, dy=mouse.y-player.y;
-  const d=Math.sqrt(dx*dx+dy*dy)||1, cap=Math.min(d,80);
-  aimLine.lineStyle(1,0xffffff,0.35);
-  aimLine.moveTo(player.x,player.y);
-  aimLine.lineTo(player.x+dx/d*cap, player.y+dy/d*cap);
-  aimLine.lineStyle(1,0xffffff,0.5);
-  aimLine.drawCircle(mouse.x,mouse.y,4);
+  const dist=Math.sqrt(dx*dx+dy*dy)||1;
+  const nx=dx/dist, ny=dy/dist;
+  const lineLen = Math.min(dist, 120);
+
+  // Línea discontinua: segmentos alternados
+  const dashLen = 8, gapLen = 6, total = dashLen + gapLen;
+  let traveled = 14;  // arranca un poco más allá del sprite
+  aimLine.lineStyle(1, 0xffffff, 0.55);
+  while (traveled < lineLen) {
+    const segEnd = Math.min(traveled + dashLen, lineLen);
+    aimLine.moveTo(player.x + nx*traveled, player.y + ny*traveled);
+    aimLine.lineTo(player.x + nx*segEnd,   player.y + ny*segEnd);
+    traveled += total;
+  }
+
+  // Pequeño círculo en el cursor
+  aimLine.lineStyle(1, 0xffffff, 0.55);
+  aimLine.drawCircle(mouse.x, mouse.y, 5);
+  // Cruz interior del cursor
+  aimLine.moveTo(mouse.x-3, mouse.y); aimLine.lineTo(mouse.x+3, mouse.y);
+  aimLine.moveTo(mouse.x, mouse.y-3); aimLine.lineTo(mouse.x, mouse.y+3);
 }
 
-const playerBarsGfx=new PIXI.Graphics(); app.stage.addChild(playerBarsGfx);
+const playerBarsGfx = new PIXI.Graphics();
+app.stage.addChild(playerBarsGfx);
+
 function drawPlayerBars(now) {
   playerBarsGfx.clear();
   if (!player||gameOver) return;
   const hpActive=now<playerHPBarExpiry, shActive=now<shieldBarExpiry;
   if (!hpActive&&!shActive) return;
-  const longestT=Math.max(
+  const longestT = Math.max(
     hpActive?(playerHPBarExpiry-now)/PLAYER_HP_BAR_DURATION:0,
     shActive?(shieldBarExpiry-now)/PLAYER_HP_BAR_DURATION:0
   );
@@ -932,26 +1068,43 @@ function drawPlayerBars(now) {
   const BW=80,BH=6,GAP=3,bx=player.x-BW/2;
   const byHP=player.y-player.halfH-18, bySH=byHP+BH+GAP;
   const hpFrac=Math.max(0,player.energy/player.maxEnergy);
-  playerBarsGfx.beginFill(0x1a0000,0.75*alpha); playerBarsGfx.drawRect(bx,byHP,BW,BH); playerBarsGfx.endFill();
-  const hpR=Math.round(255*(1-hpFrac)),hpG=Math.round(255*hpFrac);
-  playerBarsGfx.beginFill((hpR<<16)|(hpG<<8),alpha); playerBarsGfx.drawRect(bx,byHP,BW*hpFrac,BH); playerBarsGfx.endFill();
-  playerBarsGfx.lineStyle(1,0xff6666,0.6*alpha); playerBarsGfx.drawRect(bx,byHP,BW,BH);
+  playerBarsGfx.beginFill(0x1a0000,0.75*alpha);
+  playerBarsGfx.drawRect(bx,byHP,BW,BH); playerBarsGfx.endFill();
+  const hpR=Math.round(255*(1-hpFrac)), hpG=Math.round(255*hpFrac);
+  playerBarsGfx.beginFill((hpR<<16)|(hpG<<8),alpha);
+  playerBarsGfx.drawRect(bx,byHP,BW*hpFrac,BH); playerBarsGfx.endFill();
+  playerBarsGfx.lineStyle(1,0xff6666,0.6*alpha);
+  playerBarsGfx.drawRect(bx,byHP,BW,BH);
+
+  // Shield bar
   let shFrac;
-  if (shieldActive||shieldCooldownUntil<=now) { shFrac=Math.max(0,1-shieldUsedMs/SHIELD_MAX_MS); }
-  else { const ct=shieldUsedMs/SHIELD_MAX_MS*SHIELD_COOLDOWN; shFrac=Math.max(0,Math.min(1,(ct-(shieldCooldownUntil-now))/ct)); }
+  if (shieldActive||shieldCooldownUntil<=now) {
+    shFrac=Math.max(0,1-shieldUsedMs/SHIELD_MAX_MS);
+  } else {
+    const ct=shieldUsedMs/SHIELD_MAX_MS*SHIELD_COOLDOWN;
+    shFrac=Math.max(0,Math.min(1,(ct-(shieldCooldownUntil-now))/ct));
+  }
   playerBarsGfx.lineStyle(0);
-  playerBarsGfx.beginFill(0x001a33,0.75*alpha); playerBarsGfx.drawRect(bx,bySH,BW,BH); playerBarsGfx.endFill();
-  playerBarsGfx.beginFill(shieldActive?0x00ffff:0x0088ff,alpha); playerBarsGfx.drawRect(bx,bySH,BW*shFrac,BH); playerBarsGfx.endFill();
-  playerBarsGfx.lineStyle(1,0x44ccff,0.6*alpha); playerBarsGfx.drawRect(bx,bySH,BW,BH);
+  playerBarsGfx.beginFill(0x001a33,0.75*alpha);
+  playerBarsGfx.drawRect(bx,bySH,BW,BH); playerBarsGfx.endFill();
+  playerBarsGfx.beginFill(shieldActive?0x00ffff:0x0088ff,alpha);
+  playerBarsGfx.drawRect(bx,bySH,BW*shFrac,BH); playerBarsGfx.endFill();
+  playerBarsGfx.lineStyle(1,0x44ccff,0.6*alpha);
+  playerBarsGfx.drawRect(bx,bySH,BW,BH);
 }
 
-const shieldGfx=new PIXI.Graphics(); app.stage.addChild(shieldGfx);
+const shieldGfx = new PIXI.Graphics();
+app.stage.addChild(shieldGfx);
+
 function drawShield(now) {
   shieldGfx.clear();
   if (!player||!player.alive||!shieldActive) return;
   const pulse=0.18+0.12*Math.sin(now/80);
-  shieldGfx.lineStyle(2,0x88ffff,0.85); shieldGfx.drawCircle(player.x,player.y,SHIELD_RADIUS);
-  shieldGfx.beginFill(0x44aaff,pulse); shieldGfx.drawCircle(player.x,player.y,SHIELD_RADIUS); shieldGfx.endFill();
+  shieldGfx.lineStyle(2,0x88ffff,0.85);
+  shieldGfx.drawCircle(player.x,player.y,SHIELD_RADIUS);
+  shieldGfx.beginFill(0x44aaff,pulse);
+  shieldGfx.drawCircle(player.x,player.y,SHIELD_RADIUS);
+  shieldGfx.endFill();
 }
 
 // ================================================================
@@ -959,18 +1112,18 @@ function drawShield(now) {
 // ================================================================
 function setup() {
   const sw=W(), sh=H(), WS=14;
-  spawnWall(sw/2,   WS/2,     sw,WS);
-  spawnWall(sw/2,   sh-WS/2,  sw,WS);
-  spawnWall(WS/2,   sh/2,     WS,sh);
-  spawnWall(sw-WS/2,sh/2,     WS,sh);
-  const cols=2, rows=3, cellW=sw/(cols+1), cellH=sh/(rows+1);
+  spawnWall(sw/2,   WS/2,    sw,WS);
+  spawnWall(sw/2,   sh-WS/2, sw,WS);
+  spawnWall(WS/2,   sh/2,    WS,sh);
+  spawnWall(sw-WS/2,sh/2,    WS,sh);
+  const cols=2,rows=3,cellW=sw/(cols+1),cellH=sh/(rows+1);
   const wallDefs=[[60,14],[14,60],[80,14],[14,50],[70,18]];
   let wi=0;
-  for (let r=1;r<=rows;r++) for (let c=1;c<=cols&&wi<5;c++,wi++) {
+  for (let r=1;r<=rows;r++) for(let c=1;c<=cols&&wi<5;c++,wi++) {
     spawnWall(
       cellW*c+(Math.random()-0.5)*cellW*0.4,
       cellH*r+(Math.random()-0.5)*cellH*0.4,
-      wallDefs[wi][0], wallDefs[wi][1]
+      wallDefs[wi][0],wallDefs[wi][1]
     );
   }
   player = spawnPlayer();
@@ -992,12 +1145,13 @@ app.ticker.add(() => {
     phaseUpdate(now);
     enemyAI(now);
     inputUpdate(now);
+    updateBulletFade();
     physicsStep(dt, now);
     purge();
     syncGraphics();
     updateEnergyBars(now);
     updateFragments(dt);
-    updatePulses(dt);
+    updatePulses();
     updateImpulseFlashes();
     spawnExhaust(now);
     updateExhaust(dt);
