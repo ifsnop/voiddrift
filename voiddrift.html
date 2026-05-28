@@ -159,6 +159,9 @@ const SHIELD_HIT_CD    = 600;
 
 // --- BALAS del jugador ---
 const BULLET_DAMAGE = { normal:1, heavy:3, laser:6 };
+const AUTOBEAM_RADIUS   = 80;    // radio de autodetección del rayo (px)
+const AUTOBEAM_DAMAGE   = 6;     // igual que laser
+const AUTOBEAM_TICK_MS  = 120;   // cadencia de daño en ms
 const BULLET_SPEED  = { normal:10, heavy:7, laser:18 };
 const BULLET_MASS   = { normal:0.3, heavy:1.5, laser:0.05 };
 const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4 };
@@ -1345,7 +1348,8 @@ const blackholeGfx = new PIXI.Graphics();
 let blackholeSpawnTime = 0;
 
 // Malla de fondo permanente deformada por blackholes
-const warpGridGfx = new PIXI.Graphics();  // se añade al stage en setup()
+const warpGridGfx  = new PIXI.Graphics();  // se añade al stage en setup()
+const autoBeamGfx  = new PIXI.Graphics();  // rayo autobeam — HUD layer
 
 function onEnemyDeath(enemy, playerKill = false) {
   if (playerKill) {
@@ -1617,6 +1621,9 @@ function physicsStep(dt, now) {
 const keys  = {};
 const mouse = { x:0, y:0, down:false };
 let player = null, lastShot = 0, currentWeapon = "normal";
+let autoBeamOn = false;        // arma 4: toggle
+let autoBeamTarget = null;     // entidad objetivo actual
+let autoBeamLastTick = 0;      // último momento de daño
 let weaponSpread = 0;  // 0..7: 8 modos de disparo para cada arma
 let gameOver = false, paused = false;
 let gameStarted = false;
@@ -1628,6 +1635,7 @@ window.addEventListener("keydown", e => {
   if (e.code==="Digit1") { if (currentWeapon==="normal") { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="normal"; weaponSpread=0; } return; }
   if (e.code==="Digit2") { if (currentWeapon==="heavy")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="heavy";  weaponSpread=0; } return; }
   if (e.code==="Digit3") { if (currentWeapon==="laser")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="laser";  weaponSpread=0; } return; }
+  if (e.code==="Digit4") { autoBeamOn = !autoBeamOn; autoBeamTarget = null; return; }
   if (e.code==="KeyZ") { spawnEnemy("enemy_basic");   return; }
   if (e.code==="KeyX") { spawnEnemy("enemy_heavy");   return; }
   if (e.code==="KeyC") { spawnEnemy("enemy_boss");    return; }
@@ -1736,6 +1744,7 @@ function hudUpdate(now) {
   if (paused) return;
   if (player) {
     const wNames={normal:"1-Basic",heavy:"2-Heavy",laser:"3-Laser"};
+    const beamInfo = autoBeamOn ? ' <span style="color:#44aaff;text-shadow:0 0 6px #44aaff">[4-BEAM ON]</span>' : ' <span style="color:#445566">[4-beam off]</span>';
     const wColors={normal:"#ffff33",heavy:"#ff8833",laser:"#33ffff"};
     const recharging = !shieldActive && shieldUsedMs > 0;
     const shieldInfo = shieldActive
@@ -1898,6 +1907,7 @@ function setup() {
   if (!app.stage.children.includes(playerBarsGfx)) app.stage.addChild(playerBarsGfx);
   if (!app.stage.children.includes(shieldGfx))     app.stage.addChild(shieldGfx);
   if (!app.stage.children.includes(blackholeGfx))  app.stage.addChild(blackholeGfx);
+  if (!app.stage.children.includes(autoBeamGfx))   app.stage.addChild(autoBeamGfx);
   const sw=W(), sh=H(), WS=14;
   // Paredes perimetrales
   spawnWall(sw/2,    WS/2,    sw, WS);
@@ -1910,6 +1920,62 @@ function setup() {
   for (const w of walls) spawnWall(w.x, w.y, w.w, w.h);
 
   player = spawnPlayer();
+}
+
+// ================================================================
+// AUTO-BEAM (arma 4)
+// ================================================================
+function updateAutoBeam(now) {
+  autoBeamGfx.clear();
+  if (!autoBeamOn || !player || !player.alive) return;
+
+  // Buscar objetivo válido: el más cercano en AUTOBEAM_RADIUS
+  if (!autoBeamTarget || !autoBeamTarget.alive) {
+    autoBeamTarget = null;
+    let best = AUTOBEAM_RADIUS, bestE = null;
+    for (const e of pool) {
+      if (!e.alive || e.type !== TYPE.ENEMY) continue;
+      const d = Math.hypot(e.x - player.x, e.y - player.y);
+      if (d < best) { best = d; bestE = e; }
+    }
+    autoBeamTarget = bestE;
+  }
+
+  if (!autoBeamTarget) return;
+
+  // Aplicar daño periódico
+  if (now - autoBeamLastTick >= AUTOBEAM_TICK_MS) {
+    autoBeamLastTick = now;
+    autoBeamTarget.energy -= AUTOBEAM_DAMAGE;
+    showEnergyBar(autoBeamTarget, now);
+    spawnFragments(autoBeamTarget.x, autoBeamTarget.y, 0, 0, 0x44aaff, 4);
+    if (autoBeamTarget.energy <= 0) {
+      autoBeamTarget.alive = false;
+      onEnemyDeath(autoBeamTarget, true);
+      autoBeamTarget = null;
+      return;
+    }
+  }
+
+  // Dibujar rayo neon azul
+  const tx = autoBeamTarget.x, ty = autoBeamTarget.y;
+  const px = player.x,         py = player.y;
+  const pulse = 0.7 + 0.3 * Math.sin(now / 60);
+
+  // Halo exterior ancho y tenue
+  autoBeamGfx.lineStyle(6, 0x0044ff, 0.18 * pulse);
+  autoBeamGfx.moveTo(px, py); autoBeamGfx.lineTo(tx, ty);
+  // Anillo medio
+  autoBeamGfx.lineStyle(3, 0x2288ff, 0.45 * pulse);
+  autoBeamGfx.moveTo(px, py); autoBeamGfx.lineTo(tx, ty);
+  // Núcleo brillante
+  autoBeamGfx.lineStyle(1.5, 0xaaddff, 0.95);
+  autoBeamGfx.moveTo(px, py); autoBeamGfx.lineTo(tx, ty);
+  // Punto de impacto
+  autoBeamGfx.lineStyle(0);
+  autoBeamGfx.beginFill(0x88ccff, 0.8 * pulse);
+  autoBeamGfx.drawCircle(tx, ty, 4 + 2 * pulse);
+  autoBeamGfx.endFill();
 }
 
 // ================================================================
@@ -2131,6 +2197,7 @@ app.ticker.add(() => {
     spawnExhaust(now);
     updateExhaust(dt);
     drawWarpGrid();
+    updateAutoBeam(now);
     drawShield(now);
     drawAimLine();
     drawPlayerBars(now);
@@ -2158,6 +2225,9 @@ function startGame() {
   gameOver = false;
   paused = false;
   weaponSpread = 0;
+  autoBeamOn = false;
+  autoBeamTarget = null;
+  autoBeamLastTick = 0;
   currentWeapon = "normal";
   prevTime = null;
   shieldActive = false;
