@@ -1230,16 +1230,25 @@ function updateFragments(dt) {
 
 function spawnExhaust(now) {
   if (!player || !player.alive) return;
-  const spd = Math.sqrt(player.vx*player.vx + player.vy*player.vy);
-  if (spd < 0.4 || now - lastExhaust < EXHAUST_RATE_MS) return;
+  // Dirección del exhaust: opuesta a las teclas pulsadas (no a la velocidad)
+  let ix = 0, iy = 0;
+  if (keys["KeyW"]) iy -= 1;
+  if (keys["KeyS"]) iy += 1;
+  if (keys["KeyA"]) ix -= 1;
+  if (keys["KeyD"]) ix += 1;
+  if (ix === 0 && iy === 0) return;
+  if (now - lastExhaust < EXHAUST_RATE_MS) return;
   lastExhaust = now;
-  const nx = player.vx/spd, ny = player.vy/spd;
+  // Normalizar dirección de entrada → el exhaust sale en la dirección opuesta
+  const ilen = Math.sqrt(ix*ix + iy*iy);
+  const nx = ix/ilen, ny = iy/ilen;  // dirección de movimiento
   const ox = -nx*(player.halfW+2), oy = -ny*(player.halfH+2);
+  const spd = Math.sqrt(player.vx*player.vx + player.vy*player.vy);
   const count = spd > 3 ? 6 : spd > 1.5 ? 4 : 2;
   for (let i = 0; i < count; i++) {
     const spread = (Math.random()-0.5)*1.8;
-    const evx = -nx*(3+Math.random()*4) + ny*spread*1.5 + player.vx*0.15;
-    const evy = -ny*(3+Math.random()*4) - nx*spread*1.5 + player.vy*0.15;
+    const evx = -nx*(3+Math.random()*4) + ny*spread*1.5;
+    const evy = -ny*(3+Math.random()*4) - nx*spread*1.5;
     const g = new PIXI.Graphics();
     const hot = Math.random() > 0.4;
     const col = hot ? 0xffffff : (Math.random()>0.5 ? 0xffcc00 : 0xff6600);
