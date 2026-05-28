@@ -1624,6 +1624,8 @@ let player = null, lastShot = 0, currentWeapon = "normal";
 let autoBeamOn = false;        // arma 4: toggle
 let autoBeamTarget = null;     // entidad objetivo actual
 let autoBeamLastTick = 0;      // último momento de daño
+let autoBeamDeathTime = 0;     // cuando murió el último objetivo
+let autoBeamLastPos = null;    // última posición conocida del objetivo (para el fade)
 let weaponSpread = 0;  // 0..7: 8 modos de disparo para cada arma
 let gameOver = false, paused = false;
 let gameStarted = false;
@@ -1926,25 +1928,49 @@ function setup() {
 // ================================================================
 // AUTO-BEAM (arma 4)
 // ================================================================
+const AUTOBEAM_MIN_SHOW_MS = 250;  // beam visible at least this long after kill
+
 function updateAutoBeam(now) {
   autoBeamGfx.clear();
   if (!autoBeamOn || !player || !player.alive) return;
 
-  // Buscar objetivo válido: el más cercano en AUTOBEAM_RADIUS
+  // If target just died, hold beam at last position for AUTOBEAM_MIN_SHOW_MS
+  const inDeathHold = autoBeamLastPos && (now - autoBeamDeathTime) < AUTOBEAM_MIN_SHOW_MS;
+
   if (!autoBeamTarget || !autoBeamTarget.alive) {
-    autoBeamTarget = null;
-    let best = AUTOBEAM_RADIUS, bestE = null;
-    for (const e of pool) {
-      if (!e.alive || e.type !== TYPE.ENEMY) continue;
-      const d = Math.hypot(e.x - player.x, e.y - player.y);
-      if (d < best) { best = d; bestE = e; }
+    if (!inDeathHold) {
+      // Death hold expired — search for next target
+      autoBeamTarget = null;
+      let best = AUTOBEAM_RADIUS, bestE = null;
+      for (const e of pool) {
+        if (!e.alive || e.type !== TYPE.ENEMY) continue;
+        const d = Math.hypot(e.x - player.x, e.y - player.y);
+        if (d < best) { best = d; bestE = e; }
+      }
+      autoBeamTarget = bestE;
+      autoBeamLastPos = autoBeamTarget ? { x: autoBeamTarget.x, y: autoBeamTarget.y } : null;
     }
-    autoBeamTarget = bestE;
+    // During hold: draw fading beam to last position and return
+    if (inDeathHold && autoBeamLastPos) {
+      const fade = 1 - (now - autoBeamDeathTime) / AUTOBEAM_MIN_SHOW_MS;
+      const tx = autoBeamLastPos.x, ty = autoBeamLastPos.y;
+      const px = player.x, py = player.y;
+      autoBeamGfx.lineStyle(6,   0x0044ff, 0.18 * fade);
+      autoBeamGfx.moveTo(px,py); autoBeamGfx.lineTo(tx,ty);
+      autoBeamGfx.lineStyle(3,   0x2288ff, 0.45 * fade);
+      autoBeamGfx.moveTo(px,py); autoBeamGfx.lineTo(tx,ty);
+      autoBeamGfx.lineStyle(1.5, 0xaaddff, 0.95 * fade);
+      autoBeamGfx.moveTo(px,py); autoBeamGfx.lineTo(tx,ty);
+      return;
+    }
   }
 
   if (!autoBeamTarget) return;
 
-  // Aplicar daño periódico
+  // Track last known position
+  autoBeamLastPos = { x: autoBeamTarget.x, y: autoBeamTarget.y };
+
+  // Apply periodic damage
   if (now - autoBeamLastTick >= AUTOBEAM_TICK_MS) {
     autoBeamLastTick = now;
     autoBeamTarget.energy -= AUTOBEAM_DAMAGE;
@@ -1953,26 +1979,23 @@ function updateAutoBeam(now) {
     if (autoBeamTarget.energy <= 0) {
       autoBeamTarget.alive = false;
       onEnemyDeath(autoBeamTarget, true);
+      autoBeamDeathTime = now;
       autoBeamTarget = null;
       return;
     }
   }
 
-  // Dibujar rayo neon azul
+  // Draw neon blue beam
   const tx = autoBeamTarget.x, ty = autoBeamTarget.y;
   const px = player.x,         py = player.y;
   const pulse = 0.7 + 0.3 * Math.sin(now / 60);
 
-  // Halo exterior ancho y tenue
-  autoBeamGfx.lineStyle(6, 0x0044ff, 0.18 * pulse);
+  autoBeamGfx.lineStyle(6,   0x0044ff, 0.18 * pulse);
   autoBeamGfx.moveTo(px, py); autoBeamGfx.lineTo(tx, ty);
-  // Anillo medio
-  autoBeamGfx.lineStyle(3, 0x2288ff, 0.45 * pulse);
+  autoBeamGfx.lineStyle(3,   0x2288ff, 0.45 * pulse);
   autoBeamGfx.moveTo(px, py); autoBeamGfx.lineTo(tx, ty);
-  // Núcleo brillante
   autoBeamGfx.lineStyle(1.5, 0xaaddff, 0.95);
   autoBeamGfx.moveTo(px, py); autoBeamGfx.lineTo(tx, ty);
-  // Punto de impacto
   autoBeamGfx.lineStyle(0);
   autoBeamGfx.beginFill(0x88ccff, 0.8 * pulse);
   autoBeamGfx.drawCircle(tx, ty, 4 + 2 * pulse);
