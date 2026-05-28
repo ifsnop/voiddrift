@@ -83,8 +83,12 @@
 const TYPE = { ENEMY:"enemy", PLAYER:"player", WALL:"wall", BULLET:"bullet" };
 
 // --- FASES ---
-const PHASE_DURATION_MS   = 30000;   // duración de cada fase (ms)
-const TOTAL_PHASES        = 6;
+const PHASE_DURATION_MS    = 30000;  // duración de cada fase (ms)
+const TOTAL_PHASES         = 7;
+const PHASE7_DELAY_MS      = 10000; // ms tras el inicio de fase 7 antes de la oleada
+const PHASE7_CORNERS       = 10;    // spawners por esquina
+const PHASE7_SPAWN_INTERVAL = 500;  // ms entre cada spawner
+const PHASE7_CORNER_MARGIN  = 60;   // distancia de la esquina al centro del spawner
 
 // Enemigos que se AÑADEN al inicio de cada fase (los anteriores permanecen)
 const PHASE_ADD_ENEMIES = {
@@ -94,6 +98,7 @@ const PHASE_ADD_ENEMIES = {
   4: { enemy_spawner: 2, enemy_follower: 5 },
   5: { enemy_hitter: 4 },
   6: { enemy_blackhole: 1 },
+  7: {},  // spawners de esquina gestionados por phase7Update
 };
 
 // --- BULLETS: desvanecimiento con distancia ---
@@ -170,12 +175,12 @@ const ENEMY_BULLET_TRAVEL = 9999;  // balas enemigas no se desvanecen
 
 // --- FRAGMENTOS de impacto ---
 const FRAG_DURATION    = 750;
-const FRAG_COUNT_MIN   = 18;   // partículas mínimas por impacto
-const FRAG_COUNT_MAX   = 32;   // partículas máximas
-const FRAG_SPEED_MIN   = 2.5;
-const FRAG_SPEED_MAX   = 9.0;
-const FRAG_SIZE_MIN    = 2.5;
-const FRAG_SIZE_MAX    = 7.0;
+const FRAG_COUNT_MIN   = 24;   // partículas mínimas por impacto
+const FRAG_COUNT_MAX   = 44;   // partículas máximas
+const FRAG_SPEED_MIN   = 3.0;
+const FRAG_SPEED_MAX   = 11.0;
+const FRAG_SIZE_MIN    = 3.0;
+const FRAG_SIZE_MAX    = 9.0;
 
 // --- EXHAUST ---
 const EXHAUST_DURATION = 420;
@@ -629,6 +634,10 @@ function updateImpulseFlashes() {
 let currentPhase   = 0;
 let phaseStartTime = 0;
 let phaseActive    = false;
+let phase7Started  = false;   // true once the corner-wave has begun
+let phase7NextSpawn = 0;      // timestamp of next corner spawner
+let phase7Count    = 0;       // spawners already released this wave
+
 
 const elPhaseTimer = document.getElementById("phaseTimer");
 const elPhaseLabel = document.getElementById("phaseLabel");
@@ -643,6 +652,7 @@ function startPhase(n, now) {
   currentPhase   = n;
   phaseStartTime = now;
   phaseActive    = true;
+  if (n === 7) { phase7Started = false; phase7Count = 0; phase7NextSpawn = 0; }
   const config = PHASE_ADD_ENEMIES[n] ?? {};
   for (const [variant, count] of Object.entries(config)) {
     for (let i = 0; i < count; i++) spawnEnemy(variant);
@@ -672,6 +682,43 @@ function phaseUpdate(now) {
       elPhaseLabel.textContent = "¡COMPLETADO!";
     }
   }
+}
+
+// ================================================================
+// FASE 7 — oleada de spawners en las 4 esquinas
+// ================================================================
+function phase7Update(now) {
+  if (currentPhase !== 7 || paused || gameOver) return;
+  const elapsed = now - phaseStartTime;
+
+  // Wait PHASE7_DELAY_MS after phase start before releasing the wave
+  if (!phase7Started) {
+    if (elapsed < PHASE7_DELAY_MS) return;
+    phase7Started = true;
+    phase7Count   = 0;
+    phase7NextSpawn = now;
+  }
+
+  // Total spawners = 4 corners × PHASE7_CORNERS
+  const total = 4 * PHASE7_CORNERS;
+  if (phase7Count >= total) return;
+  if (now < phase7NextSpawn) return;
+
+  // Spawn one spawner at the next corner position
+  const wave  = Math.floor(phase7Count / 4);  // 0..PHASE7_CORNERS-1
+  const corner = phase7Count % 4;              // 0=TL 1=TR 2=BL 3=BR
+  const m = PHASE7_CORNER_MARGIN;
+  const sw = W(), sh = H();
+  const cx = corner === 0 || corner === 2 ? m : sw - m;
+  const cy = corner === 0 || corner === 1 ? m : sh - m;
+  // Small random jitter so they don't stack perfectly
+  const jitter = 20;
+  spawnEnemy('enemy_spawner',
+    cx + (Math.random()-0.5)*jitter,
+    cy + (Math.random()-0.5)*jitter);
+
+  phase7Count++;
+  phase7NextSpawn = now + PHASE7_SPAWN_INTERVAL;
 }
 
 // ================================================================
@@ -1394,14 +1441,46 @@ function onEnemyDeath(enemy, playerKill = false) {
     const mass = ENERGY[enemy.variant] ?? 1;
     score += mass;
   }
-  if (enemy.variant === 'enemy_boss') {
-    for (let i=0;i<4;i++) spawnEnemy('enemy_heavy',enemy.x+(Math.random()-.5)*30,enemy.y+(Math.random()-.5)*30);
+
+  // Per-type death explosion — size and count scale with enemy mass
+  const col  = enemy.color ?? 0xffffff;
+  const ex   = enemy.x, ey = enemy.y;
+  const evx  = enemy.vx * 0.3, evy = enemy.vy * 0.3;
+
+  if (enemy.variant === 'enemy_basic') {
+    spawnFragments(ex, ey, evx, evy, col, 30);
   } else if (enemy.variant === 'enemy_heavy') {
-    for (let i=0;i<2;i++) spawnEnemy('enemy_basic',enemy.x+(Math.random()-.5)*20,enemy.y+(Math.random()-.5)*20);
+    spawnFragments(ex, ey, evx, evy, col, 50);
+    spawnFragments(ex, ey, evx, evy, 0xffcc44, 20);
+    for (let i=0;i<2;i++) spawnEnemy('enemy_basic',ex+(Math.random()-.5)*20,ey+(Math.random()-.5)*20);
+  } else if (enemy.variant === 'enemy_boss') {
+    spawnFragments(ex, ey, evx, evy, col, 70);
+    spawnFragments(ex, ey, evx, evy, 0xff8800, 30);
+    spawnFragments(ex, ey, evx, evy, 0xffffff, 15);
+    spawnSpawnerPulse(ex, ey);
+    for (let i=0;i<4;i++) spawnEnemy('enemy_heavy',ex+(Math.random()-.5)*30,ey+(Math.random()-.5)*30);
   } else if (enemy.variant === 'enemy_spawner') {
-    spawnSpawnerPulse(enemy.x, enemy.y);
-    setTimeout(()=> spawnSpawnerPulse(enemy.x, enemy.y), 180);
-    for (let i=0;i<SPAWNER_DEATH_RELEASE;i++) spawnEnemy('enemy_heavy',enemy.x+(Math.random()-.5)*50,enemy.y+(Math.random()-.5)*50);
+    spawnFragments(ex, ey, evx, evy, col, 60);
+    spawnFragments(ex, ey, evx, evy, 0xdd44ff, 25);
+    spawnSpawnerPulse(ex, ey);
+    setTimeout(()=> spawnSpawnerPulse(ex, ey), 180);
+    for (let i=0;i<SPAWNER_DEATH_RELEASE;i++) spawnEnemy('enemy_heavy',ex+(Math.random()-.5)*50,ey+(Math.random()-.5)*50);
+  } else if (enemy.variant === 'enemy_follower') {
+    spawnFragments(ex, ey, evx, evy, col, 40);
+    spawnFragments(ex, ey, evx, evy, 0x44ffaa, 15);
+  } else if (enemy.variant === 'enemy_hitter') {
+    spawnFragments(ex, ey, evx, evy, col, 45);
+    spawnFragments(ex, ey, evx, evy, 0xff2244, 20);
+  } else if (enemy.variant === 'enemy_blackhole') {
+    // Massive implosion-explosion
+    spawnFragments(ex, ey, evx, evy, 0xcc00ff, 80);
+    spawnFragments(ex, ey, evx, evy, 0xff9900, 50);
+    spawnFragments(ex, ey, evx, evy, 0xffffff, 30);
+    spawnSpawnerPulse(ex, ey);
+    setTimeout(()=> spawnSpawnerPulse(ex, ey), 120);
+    setTimeout(()=> spawnSpawnerPulse(ex, ey), 280);
+  } else {
+    spawnFragments(ex, ey, evx, evy, col, 28);
   }
 }
 
@@ -1677,6 +1756,7 @@ window.addEventListener("keydown", e => {
   if (e.code==="Digit2") { if (currentWeapon==="heavy")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="heavy";  weaponSpread=0; } return; }
   if (e.code==="Digit3") { if (currentWeapon==="laser")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="laser";  weaponSpread=0; } return; }
   if (e.code==="Digit4") { autoBeamOn = !autoBeamOn; autoBeamTarget = null; return; }
+  if (e.code==="Digit7") { startPhase(7, performance.now()); return; }
   if (e.code==="KeyZ") { spawnEnemy("enemy_basic");   return; }
   if (e.code==="KeyX") { spawnEnemy("enemy_heavy");   return; }
   if (e.code==="KeyC") { spawnEnemy("enemy_boss");    return; }
@@ -2220,6 +2300,7 @@ app.ticker.add(() => {
   if (currentPhase===0 && !gameOver) startPhase(1, now);
 
   phaseUpdate(now);
+  phase7Update(now);
   if (!gameOver && !paused) {
     enemyAI(now);
     emitAllEnemyFx(now);
@@ -2273,6 +2354,9 @@ function startGame() {
   autoBeamLastTick = 0;
   currentWeapon = "normal";
   prevTime = null;
+  phase7Started = false;
+  phase7Count   = 0;
+  phase7NextSpawn = 0;
   shieldActive = false;
   shieldUsedMs = 0;
   warpGridGfx.clear();
