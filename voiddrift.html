@@ -1778,7 +1778,7 @@ app.stage.addChild(playerBarsGfx);
 
 function drawPlayerBars(now) {
   playerBarsGfx.clear();
-  if (!player||gameOver) return;
+  if (!player) return;
   const hpActive = now < playerHPBarExpiry;
   const shActive = now < shieldBarExpiry;
   if (!hpActive && !shActive) return;
@@ -1800,17 +1800,9 @@ function drawPlayerBars(now) {
   playerBarsGfx.lineStyle(1,0xff6666,0.6*alpha);
   playerBarsGfx.drawRect(bx,byHP,BW,BH);
 
-  // Shield bar
-  const inCD = now < shieldCooldownUntil;
-  let shFrac, shColor;
-  if (inCD) {
-    const elapsed = SHIELD_COOLDOWN - (shieldCooldownUntil - now);
-    shFrac  = Math.max(0, Math.min(1, elapsed / SHIELD_COOLDOWN));
-    shColor = 0x336699;
-  } else {
-    shFrac  = Math.max(0, 1 - shieldUsedMs / SHIELD_MAX_MS);
-    shColor = shieldActive ? 0x00ffff : 0x0088ff;
-  }
+  // Shield bar — shows remaining charge (1 = full, 0 = empty)
+  const shFrac  = Math.max(0, 1 - shieldUsedMs / SHIELD_MAX_MS);
+  const shColor = shieldActive ? 0x00ffff : 0x0088ff;
   playerBarsGfx.lineStyle(0);
   playerBarsGfx.beginFill(0x001a33, 0.75*alpha);
   playerBarsGfx.drawRect(bx,bySH,BW,BH); playerBarsGfx.endFill();
@@ -1888,8 +1880,12 @@ function generateInteriorWalls(sw, sh) {
 }
 
 function setup() {
-  app.stage.addChildAt(warpGridGfx, 0);  // detrás de todo
-  app.stage.addChild(blackholeGfx);
+  // Re-attach persistent gfx layers (safe to call multiple times)
+  if (!app.stage.children.includes(warpGridGfx))  app.stage.addChildAt(warpGridGfx, 0);
+  if (!app.stage.children.includes(aimLine))       app.stage.addChild(aimLine);
+  if (!app.stage.children.includes(playerBarsGfx)) app.stage.addChild(playerBarsGfx);
+  if (!app.stage.children.includes(shieldGfx))     app.stage.addChild(shieldGfx);
+  if (!app.stage.children.includes(blackholeGfx))  app.stage.addChild(blackholeGfx);
   const sw=W(), sh=H(), WS=14;
   // Paredes perimetrales
   spawnWall(sw/2,    WS/2,    sw, WS);
@@ -2010,30 +2006,56 @@ function recordRun(scoreVal, elapsedMs) {
   const name = randomName();
   const timeS = Math.round(elapsedMs / 1000);
 
-  // Scores — top 20 by score
   const scores = loadLB('lb_scores');
   scores.push({ name, score: scoreVal });
   scores.sort((a,b)=>b.score-a.score);
+  const scoreRank = scores.findIndex(r=>r.name===name && r.score===scoreVal);
   saveLB('lb_scores', scores.slice(0,20));
 
-  // Times — top 20 by duration
   const times = loadLB('lb_times');
   times.push({ name, time: timeS });
   times.sort((a,b)=>b.time-a.time);
+  const timeRank = times.findIndex(r=>r.name===name && r.time===timeS);
   saveLB('lb_times', times.slice(0,20));
+
+  return { name, scoreVal, timeS, scoreRank, timeRank };
 }
 
-function renderLB() {
+function renderLB(lastRun) {
   const scores = loadLB('lb_scores');
   const times  = loadLB('lb_times');
   const tbS = document.getElementById('tbScores');
   const tbT = document.getElementById('tbTimes');
+  const glow = 'style="color:#00ffcc;text-shadow:0 0 8px #00ffcc,0 0 2px #fff"';
+
   tbS.innerHTML = scores.length
-    ? scores.map((r,i)=>`<tr><td>${i+1}</td><td>${r.name}</td><td>${r.score}</td></tr>`).join('')
+    ? scores.map((r,i)=>{
+        const hi = lastRun && i===lastRun.scoreRank && i<20;
+        return `<tr><td ${hi?glow:''}>${i+1}</td><td ${hi?glow:''}>${r.name}</td><td ${hi?glow:''}>${r.score}</td></tr>`;
+      }).join('')
     : '<tr><td colspan="3" style="color:#555">sin registros</td></tr>';
+
   tbT.innerHTML = times.length
-    ? times.map((r,i)=>`<tr><td>${i+1}</td><td>${r.name}</td><td>${formatTime(r.time)}</td></tr>`).join('')
+    ? times.map((r,i)=>{
+        const hi = lastRun && i===lastRun.timeRank && i<20;
+        return `<tr><td ${hi?glow:''}>${i+1}</td><td ${hi?glow:''}>${r.name}</td><td ${hi?glow:''}>${formatTime(r.time)}</td></tr>`;
+      }).join('')
     : '<tr><td colspan="3" style="color:#555">sin registros</td></tr>';
+
+  // Last run summary below tables
+  const prev = document.getElementById('lastRunInfo');
+  if (prev) prev.remove();
+  if (lastRun) {
+    const div = document.createElement('div');
+    div.id = 'lastRunInfo';
+    div.style.cssText = 'margin-top:20px;text-align:center;font-size:0.9rem;line-height:2;';
+    div.innerHTML = `<span style="color:#aaa">Tu última partida —</span>
+      <span style="color:#00ffcc;text-shadow:0 0 10px #00ffcc"> ${lastRun.name}</span><br>
+      <span style="color:#ffdd44;text-shadow:0 0 8px #ffdd44">SCORE: ${lastRun.scoreVal}</span>
+      &nbsp;·&nbsp;
+      <span style="color:#88ccff;text-shadow:0 0 8px #88ccff">Tiempo: ${formatTime(lastRun.timeS)}</span>`;
+    document.getElementById('overlay').insertBefore(div, document.querySelector('.click-hint'));
+  }
 }
 
 function formatTime(s) {
@@ -2041,8 +2063,8 @@ function formatTime(s) {
   return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
 }
 
-function showOverlay(isGameOver) {
-  renderLB();
+function showOverlay(isGameOver, lastRun) {
+  renderLB(lastRun);
   const ov = document.getElementById('overlay');
   const h1 = ov.querySelector('h1');
   if (isGameOver) {
@@ -2098,8 +2120,8 @@ app.ticker.add(() => {
     drawPlayerBars(now);
     if (player && !player.alive && !gameOver) {
       gameOver = true;
-      recordRun(score, performance.now() - sessionStartTime);
-      showOverlay(true);
+      const lastRun = recordRun(score, performance.now() - sessionStartTime);
+      showOverlay(true, lastRun);
     }
   }
   hudUpdate(now);
@@ -2108,8 +2130,13 @@ app.ticker.add(() => {
 window.addEventListener("resize", () => { app.renderer.resize(window.innerWidth, window.innerHeight); });
 
 function startGame() {
-  // Reset all state
+  // Kill all existing pool entities and their gfx
+  for (const e of pool) {
+    if (e.gfx)     { app.stage.removeChild(e.gfx);     e.gfx.destroy();     e.gfx = null; }
+    if (e._ringGfx){ app.stage.removeChild(e._ringGfx); e._ringGfx.destroy(); e._ringGfx = null; }
+  }
   pool.length = 0;
+  // Reset state
   score = 0;
   currentPhase = 0;
   gameOver = false;
@@ -2117,10 +2144,13 @@ function startGame() {
   normalSpread = 0;
   currentWeapon = "normal";
   prevTime = null;
+  shieldActive = false;
+  shieldUsedMs = 0;
+  shieldCooldownUntil = 0;
+  blackholeGfx.clear();
+  warpGridGfx.clear();
   sessionStartTime = performance.now();
-  // Clear stage children except persistent gfx
-  while (app.stage.children.length > 0) app.stage.removeChildAt(0);
-  setup();
+  setup();  // re-creates player, walls, re-adds persistent gfx layers
   gameStarted = true;
   hideOverlay();
 }
