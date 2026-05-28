@@ -943,29 +943,36 @@ function inputUpdate(now) {
   } else { player.vx*=PLAYER_DAMPING; player.vy*=PLAYER_DAMPING; }
   player.sleeping=false; player.sleepN=0;
 
-  // --- SHIELD: se puede activar con cualquier carga disponible ---
-  const spDown = keys["Space"];
-  const hasCharge = shieldUsedMs < SHIELD_MAX_MS;            // queda algo de carga
-  const cdDone    = now >= shieldCooldownUntil;               // cooldown terminado
-  const canStart  = cdDone && hasCharge;                      // puede activarse
+  // --- SHIELD ---
+  // Reglas:
+  //   - Se puede activar SIEMPRE que shieldUsedMs < SHIELD_MAX_MS (haya carga)
+  //     Y no esté en cooldown por agotamiento completo.
+  //   - Soltar el escudo a mitad NO inicia cooldown; la carga se mantiene
+  //     y se puede volver a activar inmediatamente.
+  //   - El cooldown SOLO se activa cuando la carga se agota completamente
+  //     (shieldUsedMs llega a SHIELD_MAX_MS). Dura SHIELD_COOLDOWN ms.
+  //   - Durante el cooldown el escudo NO puede activarse.
+  //   - Al terminar el cooldown, shieldUsedMs se resetea a 0 (carga completa).
+  const spDown        = keys["Space"];
+  const inCooldown    = now < shieldCooldownUntil;
+  const hasCharge     = shieldUsedMs < SHIELD_MAX_MS;
 
-  if (spDown && canStart) {
-    if (!shieldActive) shieldActive = true;
+  if (spDown && hasCharge && !inCooldown) {
+    // Activar / mantener escudo
+    shieldActive = true;
     shieldUsedMs = Math.min(SHIELD_MAX_MS, shieldUsedMs + app.ticker.deltaMS);
     shieldBarExpiry = now + 3500;
     if (shieldUsedMs >= SHIELD_MAX_MS) {
+      // Carga agotada: desactivar y arrancar cooldown
       shieldActive = false;
       shieldCooldownUntil = now + SHIELD_COOLDOWN;
-    }
-  } else {
-    if (shieldActive) {
-      shieldActive = false;
-      // Si se soltó antes de agotar: cooldown proporcional al uso
-      shieldCooldownUntil = now + (shieldUsedMs / SHIELD_MAX_MS) * SHIELD_COOLDOWN;
       shieldBarExpiry = now + SHIELD_COOLDOWN + 500;
     }
-    // Recarga: cuando cooldown termina, limpiar el medidor para siguiente uso
-    if (now >= shieldCooldownUntil && shieldUsedMs > 0 && !shieldActive) {
+  } else {
+    // Tecla no pulsada, sin carga, o en cooldown: desactivar escudo
+    shieldActive = false;
+    // Fin de cooldown: restaurar carga
+    if (inCooldown === false && shieldUsedMs >= SHIELD_MAX_MS) {
       shieldUsedMs = 0;
     }
   }
@@ -1076,18 +1083,21 @@ function drawPlayerBars(now) {
   playerBarsGfx.lineStyle(1,0xff6666,0.6*alpha);
   playerBarsGfx.drawRect(bx,byHP,BW,BH);
 
-  // Shield bar
-  let shFrac;
-  if (shieldActive||shieldCooldownUntil<=now) {
-    shFrac=Math.max(0,1-shieldUsedMs/SHIELD_MAX_MS);
+  // Shield bar: recargando (azul apagado avanzando) o carga disponible (cyan)
+  const inCD = now < shieldCooldownUntil;
+  let shFrac, shColor;
+  if (inCD) {
+    const elapsed = SHIELD_COOLDOWN - (shieldCooldownUntil - now);
+    shFrac  = Math.max(0, Math.min(1, elapsed / SHIELD_COOLDOWN));
+    shColor = 0x336699;
   } else {
-    const ct=shieldUsedMs/SHIELD_MAX_MS*SHIELD_COOLDOWN;
-    shFrac=Math.max(0,Math.min(1,(ct-(shieldCooldownUntil-now))/ct));
+    shFrac  = Math.max(0, 1 - shieldUsedMs / SHIELD_MAX_MS);
+    shColor = shieldActive ? 0x00ffff : 0x0088ff;
   }
   playerBarsGfx.lineStyle(0);
   playerBarsGfx.beginFill(0x001a33,0.75*alpha);
   playerBarsGfx.drawRect(bx,bySH,BW,BH); playerBarsGfx.endFill();
-  playerBarsGfx.beginFill(shieldActive?0x00ffff:0x0088ff,alpha);
+  playerBarsGfx.beginFill(shColor,alpha);
   playerBarsGfx.drawRect(bx,bySH,BW*shFrac,BH); playerBarsGfx.endFill();
   playerBarsGfx.lineStyle(1,0x44ccff,0.6*alpha);
   playerBarsGfx.drawRect(bx,bySH,BW,BH);
@@ -1108,24 +1118,70 @@ function drawShield(now) {
 }
 
 // ================================================================
-// SETUP
+// SETUP  —  paredes interiores generadas aleatoriamente
 // ================================================================
+
+// Parámetros para la generación aleatoria de paredes interiores
+const WALL_COUNT_MIN  = 7;    // mínimo de paredes interiores
+const WALL_COUNT_MAX  = 11;   // máximo de paredes interiores
+const WALL_MIN_SHORT  = 12;   // lado corto mínimo (px)
+const WALL_MAX_SHORT  = 20;   // lado corto máximo
+const WALL_MIN_LONG   = 45;   // lado largo mínimo
+const WALL_MAX_LONG   = 130;  // lado largo máximo
+const WALL_MARGIN     = 60;   // distancia mínima a los bordes del escenario
+const WALL_MIN_SEP    = 55;   // separación mínima entre centros de paredes
+
+function randBetween(a, b) { return a + Math.random() * (b - a); }
+
+function wallsOverlap(ax, ay, aw, ah, bx, by, bw, bh, margin) {
+  // AABB con margen de seguridad
+  return Math.abs(ax-bx) < (aw+bw)/2 + margin &&
+         Math.abs(ay-by) < (ah+bh)/2 + margin;
+}
+
+function generateInteriorWalls(sw, sh) {
+  const count   = WALL_COUNT_MIN + Math.floor(Math.random()*(WALL_COUNT_MAX - WALL_COUNT_MIN + 1));
+  const placed  = [];  // { x, y, w, h }
+  const maxTries = 200;
+
+  for (let i = 0; i < count; i++) {
+    let tries = 0;
+    while (tries++ < maxTries) {
+      // Orientación aleatoria: horizontal o vertical
+      const horizontal = Math.random() > 0.5;
+      const ww = horizontal
+        ? randBetween(WALL_MIN_LONG,  WALL_MAX_LONG)
+        : randBetween(WALL_MIN_SHORT, WALL_MAX_SHORT);
+      const wh = horizontal
+        ? randBetween(WALL_MIN_SHORT, WALL_MAX_SHORT)
+        : randBetween(WALL_MIN_LONG,  WALL_MAX_LONG);
+
+      const x = randBetween(WALL_MARGIN + ww/2, sw - WALL_MARGIN - ww/2);
+      const y = randBetween(WALL_MARGIN + wh/2, sh - WALL_MARGIN - wh/2);
+
+      // Verificar separación respecto a paredes ya colocadas
+      const ok = placed.every(p => !wallsOverlap(x,y,ww,wh, p.x,p.y,p.w,p.h, WALL_MIN_SEP));
+      if (ok) {
+        placed.push({ x, y, w: ww, h: wh });
+        break;
+      }
+    }
+  }
+  return placed;
+}
+
 function setup() {
   const sw=W(), sh=H(), WS=14;
-  spawnWall(sw/2,   WS/2,    sw,WS);
-  spawnWall(sw/2,   sh-WS/2, sw,WS);
-  spawnWall(WS/2,   sh/2,    WS,sh);
-  spawnWall(sw-WS/2,sh/2,    WS,sh);
-  const cols=2,rows=3,cellW=sw/(cols+1),cellH=sh/(rows+1);
-  const wallDefs=[[60,14],[14,60],[80,14],[14,50],[70,18]];
-  let wi=0;
-  for (let r=1;r<=rows;r++) for(let c=1;c<=cols&&wi<5;c++,wi++) {
-    spawnWall(
-      cellW*c+(Math.random()-0.5)*cellW*0.4,
-      cellH*r+(Math.random()-0.5)*cellH*0.4,
-      wallDefs[wi][0],wallDefs[wi][1]
-    );
-  }
+  // Paredes perimetrales
+  spawnWall(sw/2,    WS/2,    sw, WS);
+  spawnWall(sw/2,    sh-WS/2, sw, WS);
+  spawnWall(WS/2,    sh/2,    WS, sh);
+  spawnWall(sw-WS/2, sh/2,    WS, sh);
+
+  // Paredes interiores aleatorias
+  const walls = generateInteriorWalls(sw, sh);
+  for (const w of walls) spawnWall(w.x, w.y, w.w, w.h);
+
   player = spawnPlayer();
 }
 
