@@ -729,6 +729,24 @@ function enemyAI(now) {
       if (e.gfx) e.gfx.alpha = 0.65 + 0.35 * Math.sin(now / 250 + e.id);
     }
 
+    // ---- BASIC / HEAVY / BOSS: timer drift ----
+    if (e.variant === 'enemy_basic' || e.variant === 'enemy_heavy' || e.variant === 'enemy_boss') {
+      if (!e._spawnTime) e._spawnTime = now;
+      // Drift activates after 5s or when hit by a bullet (_hitActivated set in collision)
+      const driftActive = e._hitActivated || (now - e._spawnTime >= 5000);
+      if (driftActive) {
+        const dx = player.x - e.x, dy = player.y - e.y;
+        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        // Slow drift: gentle constant acceleration toward player
+        const driftAcc = e.variant === 'enemy_boss' ? 0.04
+                       : e.variant === 'enemy_heavy' ? 0.03 : 0.025;
+        e.vx += (dx/dist) * driftAcc;
+        e.vy += (dy/dist) * driftAcc;
+        e.vx *= 0.97; e.vy *= 0.97;  // light damping so they don't overspeed
+        e.sleeping = false; e.sleepN = 0;
+      }
+    }
+
     // ---- BLACKHOLE ----
     if (e.variant === 'enemy_blackhole') {
       // Deriva lenta y suave — no persigue al jugador ni va al centro
@@ -1425,6 +1443,10 @@ function onCollision(a, b, ox, oy, now) {
       showEnergyBar(other, now);
       spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, ENEMY_COLOR[other.variant] ?? 0xffffff);
       applyBulletImpulse(bullet, other);
+      // Bullet hit activates drift for basic/heavy/boss
+      if (other.variant === 'enemy_basic' || other.variant === 'enemy_heavy' || other.variant === 'enemy_boss') {
+        other._hitActivated = true;
+      }
       bullet.alive = false; return;
     }
     bullet.alive = false; return;
@@ -1976,6 +1998,9 @@ function updateAutoBeam(now) {
     autoBeamTarget.energy -= AUTOBEAM_DAMAGE;
     showEnergyBar(autoBeamTarget, now);
     spawnFragments(autoBeamTarget.x, autoBeamTarget.y, 0, 0, 0x44aaff, 4);
+    if (autoBeamTarget.variant === 'enemy_basic' || autoBeamTarget.variant === 'enemy_heavy' || autoBeamTarget.variant === 'enemy_boss') {
+      autoBeamTarget._hitActivated = true;
+    }
     if (autoBeamTarget.energy <= 0) {
       autoBeamTarget.alive = false;
       onEnemyDeath(autoBeamTarget, true);
