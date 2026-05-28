@@ -1330,7 +1330,14 @@ function inputUpdate(now) {
   // - El cooldown SOLO ocurre si la carga se agota por completo (shieldUsedMs >= SHIELD_MAX_MS).
   const spDown     = keys["Space"];
   const inCooldown = now < shieldCooldownUntil;
-  const hasCharge  = shieldUsedMs < SHIELD_MAX_MS;
+
+  // Fin de cooldown: resetear medidor ANTES de calcular hasCharge
+  if (!inCooldown && shieldUsedMs >= SHIELD_MAX_MS) {
+    shieldUsedMs = 0;
+  }
+
+  // hasCharge se calcula después del reset para que sea correcto este mismo frame
+  const hasCharge = shieldUsedMs < SHIELD_MAX_MS;
 
   if (spDown && hasCharge && !inCooldown) {
     shieldActive = true;
@@ -1343,10 +1350,6 @@ function inputUpdate(now) {
     }
   } else {
     shieldActive = false;
-    // Fin de cooldown: resetear medidor
-    if (!inCooldown && shieldUsedMs >= SHIELD_MAX_MS) {
-      shieldUsedMs = 0;
-    }
     // Regeneración pasiva: siempre que no esté en cooldown y haya algo gastado
     if (!inCooldown && shieldUsedMs > 0) {
       shieldUsedMs = Math.max(0, shieldUsedMs - app.ticker.deltaMS * (SHIELD_MAX_MS / SHIELD_COOLDOWN));
