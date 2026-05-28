@@ -1617,7 +1617,7 @@ function physicsStep(dt, now) {
 const keys  = {};
 const mouse = { x:0, y:0, down:false };
 let player = null, lastShot = 0, currentWeapon = "normal";
-let normalSpread = 0;  // 0..4: ciclo de 1,2,3,4,5 balas para arma normal
+let weaponSpread = 0;  // 0..7: 8 modos de disparo para cada arma
 let gameOver = false, paused = false;
 let gameStarted = false;
 let sessionStartTime = 0;
@@ -1625,9 +1625,9 @@ let sessionStartTime = 0;
 window.addEventListener("keydown", e => {
   if (e.code==="KeyP") { paused=!paused; elInfo.textContent=paused?"[PAUSA] - press P to continue":""; return; }
   if (gameOver) return;
-  if (e.code==="Digit1") { if (currentWeapon==="normal") { normalSpread=(normalSpread+1)%5; } else { currentWeapon="normal"; normalSpread=0; } return; }
-  if (e.code==="Digit2") { currentWeapon="heavy";  normalSpread=0; return; }
-  if (e.code==="Digit3") { currentWeapon="laser";  normalSpread=0; return; }
+  if (e.code==="Digit1") { if (currentWeapon==="normal") { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="normal"; weaponSpread=0; } return; }
+  if (e.code==="Digit2") { if (currentWeapon==="heavy")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="heavy";  weaponSpread=0; } return; }
+  if (e.code==="Digit3") { if (currentWeapon==="laser")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="laser";  weaponSpread=0; } return; }
   if (e.code==="KeyZ") { spawnEnemy("enemy_basic");   return; }
   if (e.code==="KeyX") { spawnEnemy("enemy_heavy");   return; }
   if (e.code==="KeyC") { spawnEnemy("enemy_boss");    return; }
@@ -1694,15 +1694,18 @@ function inputUpdate(now) {
     const spd=BULLET_SPEED[currentWeapon]??BULLET_SPEED.normal;
     const offset=Math.max(player.halfW,player.halfH)+4;
 
-    // Spread pattern for normal weapon (normalSpread 0..4 = 1..5 bullets)
+    // 8 modos de disparo compartidos por las 3 armas
     const spreadAngles = [
-      [0],                                      // 1 bala
-      [-5, 5],                                  // 2 balas
-      [-5, 0, 5],                               // 3 balas
-      [-7.5, -2.5, 2.5, 7.5],                  // 4 balas
-      [-10, -5, 0, 5, 10],                      // 5 balas
+      [0],                          // modo 1: 1 bala frontal
+      [-5, 5],                      // modo 2: 2 balas
+      [-5, 0, 5],                   // modo 3: 3 balas
+      [-7.5, -2.5, 2.5, 7.5],      // modo 4: 4 balas
+      [-10, -5, 0, 5, 10],         // modo 5: 5 balas
+      [-10, -5, 0, 5, 10, 180],                   // modo 6: 5 frontales + 1 trasera
+      [-10, -5, 0, 5, 10, 175, 185],              // modo 7: 5 frontales + 2 traseras
+      [-10, -5, 0, 5, 10, 175, 180, 185],         // modo 8: 5 frontales + 3 traseras
     ];
-    const angles = (currentWeapon === "normal") ? spreadAngles[normalSpread] : [0];
+    const angles = spreadAngles[weaponSpread];
     for (const deg of angles) {
       const rad = deg * Math.PI / 180;
       const cos = Math.cos(rad), sin = Math.sin(rad);
@@ -1742,7 +1745,7 @@ function hudUpdate(now) {
         : ' <span style="color:#88ffff">[SPACE: shield]</span>';
     document.getElementById('hScore').textContent = 'SCORE: ' + score;
   elInfo.innerHTML = 'score: '+score+
-      '  weapon: <span style="color:'+wColors[currentWeapon]+'">'+wNames[currentWeapon]+(currentWeapon==="normal" && normalSpread>0 ? ' x'+(normalSpread+1) : '')+'</span>'+
+      '  weapon: <span style="color:'+wColors[currentWeapon]+'">'+wNames[currentWeapon]+(weaponSpread>0 ? ' m'+(weaponSpread+1) : '')+'</span>'+
       shieldInfo+
       '  <span style="color:#888">Z/X/C/V/B/N/M: spawn</span>'+
       "   WASD-click-1/2/3-SPACE";
@@ -2154,7 +2157,7 @@ function startGame() {
   currentPhase = 0;
   gameOver = false;
   paused = false;
-  normalSpread = 0;
+  weaponSpread = 0;
   currentWeapon = "normal";
   prevTime = null;
   shieldActive = false;
