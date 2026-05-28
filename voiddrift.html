@@ -125,10 +125,10 @@ const HITTER_BULLET_SPEED       = 5;
 const HITTER_BULLET_DAMAGE      = 2;
 
 // --- BLACKHOLE ---
-const BLACKHOLE_BASE_RADIUS     = 380;   // radio muy amplio — se siente desde lejos
-const BLACKHOLE_RADIUS_PER_MASS = 2.5;   // px extra de radio por masa absorbida
-const BLACKHOLE_BASE_FORCE      = 4;     // fuerza muy baja — fácil escapar en zona exterior
-const BLACKHOLE_FORCE_PER_MASS  = 0.08;  // crecimiento de fuerza muy lento
+const BLACKHOLE_BASE_RADIUS     = 520;   // radio ampliado
+const BLACKHOLE_RADIUS_PER_MASS = 3.0;   // px extra de radio por masa absorbida
+const BLACKHOLE_BASE_FORCE      = 2;     // fuerza a la mitad
+const BLACKHOLE_FORCE_PER_MASS  = 0.04;  // crecimiento de fuerza muy lento
 const BLACKHOLE_ESCAPE_FRAC     = 0.15;  // solo el 15% interior es zona de no-escape
 const BLACKHOLE_DRIFT_ACCEL     = 0.018; // aceleración de deriva lenta (sin centro fijo)
 const BLACKHOLE_RING_COUNT      = 5;     // círculos concéntricos visibles
@@ -1565,7 +1565,7 @@ function physicsStep(dt, now) {
         }
         // El blackhole absorbe la entidad — su masa infinita no se ve afectada en posición
         const absorbedMass = ENERGY[e.variant] ?? 1;
-        bh._massAbsorbed += absorbedMass;
+        bh._massAbsorbed = Math.min((bh._massAbsorbed||0) + absorbedMass, 4*15);  // cap: 4 x enemy_boss
         // Crecer visualmente (solo tamaño visual del núcleo, no afecta hitbox de forma relevante)
         // El tamaño real crece inmediatamente para hitbox, pero _targetSize
         // se interpola suavemente en el AI para el render visual
@@ -1948,8 +1948,8 @@ function drawWarpGrid() {
   // Sin blackholes: rejilla muy tenue permanente
   // Con blackholes: rejilla más visible, tono violeta
   const hasBH = blackholes.length > 0;
-  const gridAlpha = hasBH ? 0.38 : 0.08;
-  const gridColor = hasBH ? 0xaa44ff : 0x1a2244;
+  const gridAlpha = 0.38;
+  const gridColor = 0xaa44ff;
 
   // Dibujar segmento a segmento para poder variar el alpha con la distancia
   for (let gy = 0; gy <= sh + GRID_STEP; gy += GRID_STEP) {
@@ -1960,7 +1960,7 @@ function drawWarpGrid() {
       const [bx, by] = warp(x1, row);
       // Alpha proporcional al desplazamiento — líneas más deformadas son más visibles
       const def = Math.hypot(ax - x0, ay - row) + Math.hypot(bx - x1, by - row);
-      const extra = hasBH ? Math.min(def / 80, 0.55) : 0;
+      const extra = Math.min(def / 80, 0.55);
       warpGridGfx.lineStyle(1, gridColor, gridAlpha + extra);
       warpGridGfx.moveTo(ax, ay);
       warpGridGfx.lineTo(bx, by);
@@ -1973,7 +1973,7 @@ function drawWarpGrid() {
       const [ax, ay] = warp(col, y0);
       const [bx, by] = warp(col, y1);
       const def = Math.hypot(ax - col, ay - y0) + Math.hypot(bx - col, by - y1);
-      const extra = hasBH ? Math.min(def / 80, 0.55) : 0;
+      const extra = Math.min(def / 80, 0.55);
       warpGridGfx.lineStyle(1, gridColor, gridAlpha + extra);
       warpGridGfx.moveTo(ax, ay);
       warpGridGfx.lineTo(bx, by);
@@ -1985,9 +1985,13 @@ function drawWarpGrid() {
 // LEADERBOARD
 // ================================================================
 const HERO_PREFIXES = ['Iron','Shadow','Storm','Nova','Blaze','Frost','Thunder','Venom',
-  'Cosmic','Hyper','Omega','Steel','Dark','Neon','Solar','Lunar','Turbo','Plasma','Void','Titan'];
+  'Cosmic','Hyper','Omega','Steel','Dark','Neon','Solar','Lunar','Turbo','Plasma','Void','Titan',
+  'Cyber','Quantum','Inferno','Cryo','Photon','Astro','Null','Surge','Apex','Drift',
+  'Zenith','Flux','Rogue','Phantom','Echo','Nexus','Prism','Vector','Ember','Grim'];
 const ANIMAL_NAMES  = ['Wolf','Falcon','Shark','Jaguar','Cobra','Hawk','Panther','Viper',
-  'Eagle','Tiger','Fox','Bear','Raven','Lynx','Hydra','Mantis','Kraken','Phoenix','Bison','Orca'];
+  'Eagle','Tiger','Fox','Bear','Raven','Lynx','Hydra','Mantis','Kraken','Phoenix','Bison','Orca',
+  'Mamba','Condor','Narwhal','Wolverine','Cheetah','Scorpion','Gorilla','Barracuda','Tarantula','Komodo',
+  'Warthog','Stingray','Cassowary','Piranha','Hammerhead','Mongoose','Salamander','Puma','Dingo','Vulture'];
 
 function randomName() {
   const h = HERO_PREFIXES[Math.floor(Math.random()*HERO_PREFIXES.length)];
