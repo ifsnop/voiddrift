@@ -738,8 +738,8 @@ function enemyAI(now) {
         const dx = player.x - e.x, dy = player.y - e.y;
         const dist = Math.sqrt(dx*dx + dy*dy) || 1;
         // Slow drift: gentle constant acceleration toward player
-        const driftAcc = e.variant === 'enemy_boss' ? 0.04
-                       : e.variant === 'enemy_heavy' ? 0.03 : 0.025;
+        const driftAcc = e.variant === 'enemy_boss' ? 0.025
+                       : e.variant === 'enemy_heavy' ? 0.032 : 0.04;
         e.vx += (dx/dist) * driftAcc;
         e.vy += (dy/dist) * driftAcc;
         e.vx *= 0.97; e.vy *= 0.97;  // light damping so they don't overspeed
