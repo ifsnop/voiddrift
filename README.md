@@ -13,12 +13,16 @@ Use your ship to destroy enemies before they overwhelm you. Each phase introduce
 | Control | Action |
 |---|---|
 | `Mouse` | Aim |
-| `Left click` / `Space` | Shoot |
-| `WASD` / Arrow keys | Move |
+| `Left click` | Shoot |
+| `WASD` | Move |
+| `Q` `E` | Select target and fire missile |
 | `Shift` | Boost |
-| `E` | Shield |
+| `Space` | Shield |
 | `P` | Pause |
-| `,` | Spawn Serpent (debug) |
+| `1 2 3` | Change weapon (cannon, barrel, laser) |
+| `Z to ,` | Spawn Enemies (debug) |
+| `6` | Jump to phase 6 (debug) |
+| `7` | Jump to phase 7 (debug) |
 
 ---
 
