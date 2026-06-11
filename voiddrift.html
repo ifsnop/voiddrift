@@ -2521,6 +2521,8 @@ app.ticker.add(() => {
     drawPlayerBars(now);
     if (player && !player.alive && !gameOver) {
       gameOver = true;
+      // Remove player sprite immediately
+      if (player.gfx) { app.stage.removeChild(player.gfx); player.gfx.destroy(); player.gfx = null; }
       const lastRun = recordRun(score, performance.now() - sessionStartTime);
       // Show big death explosion for 5s, then overlay
       showDeathExplosion(player.x, player.y, () => showOverlay(true, lastRun));
