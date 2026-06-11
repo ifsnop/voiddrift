@@ -42,7 +42,14 @@
   #overlay .sub { color: #aaa; font-size: 0.85rem; margin-bottom: 24px; }
   #overlay .click-hint { margin-top: 28px; font-size: 1.1rem; color: #00ffcc;
     animation: blink 1.1s infinite; }
-  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+  #massHud {
+      position: fixed; bottom: 18px; left: 18px;
+      color: #aaffcc; font: bold 28px monospace;
+      pointer-events: none; z-index: 10;
+      text-align: left; line-height: 1;
+      text-shadow: 0 0 12px #22ffaa, 0 0 4px #fff;
+      letter-spacing: 1px;
+    }
   .score-popup {
     position: fixed; pointer-events: none; z-index: 50;
     font: bold 52px monospace; color: #ffdd44;
@@ -73,6 +80,7 @@
 <div id="phaseTimer">--</div>
 <div id="phaseLabel">FASE --</div>
 <div id="scoreHud"><span id="hScore">0</span></div>
+<div id="massHud"><span id="hMass">MASA: 0</span></div>
 <canvas id="deathExplosion"></canvas>
 <div id="overlay">
   <h1>SPACE SHOOTER</h1>
@@ -161,13 +169,14 @@ const BLACKHOLE_ORBIT_SPEED     = 0.18;  // rad/s para órbita mutua entre 2 bla
 // --- SERPENT ---
 const SERPENT_SEGMENTS   = 7;
 const SERPENT_RADIUS     = 10;    // radio de cada segmento
-const SERPENT_REST_LEN   = 28;   // longitud de reposo del muelle entre segmentos
-const SERPENT_SPRING_K   = 0.18; // rigidez del muelle
-const SERPENT_DAMPING    = 0.82; // amortiguación de velocidad
-const SERPENT_SPEED      = 2.2;  // velocidad de la cabeza persiguiendo al jugador
+const SERPENT_REST_LEN   = 48;   // separación entre segmentos (aumentada)
+const SERPENT_SPRING_K   = 0.22; // rigidez del muelle
+const SERPENT_DAMPING    = 0.88; // amortiguación de velocidad
+const SERPENT_SPEED      = 4.2;  // velocidad de la cabeza (más rápida)
 const SERPENT_ENERGY     = 8;    // vida por segmento
 const SERPENT_COLOR      = 0x22ffaa;
 const SERPENT_CORE_COLOR = 0x004422;
+const SERPENT_SHOOT_INTERVAL = 1800; // ms entre disparos (como hitter)
 
 // --- BLACKHOLE WAVE COOLDOWN ---
 let lastBlackholeDeathTime = -Infinity;  // timestamp of last blackhole death
@@ -843,29 +852,16 @@ const serpents = []; // each entry: { segments: [{entity,vx,vy}], lineGfx }
 function buildSegmentGfx(segIndex) {
   const g = new PIXI.Graphics();
   const r = SERPENT_RADIUS;
-  const isHead = segIndex === 0;
-  // Fade from bright green (head) to dark teal (tail)
   const t = segIndex / (SERPENT_SEGMENTS - 1);  // 0=head, 1=tail
-  const colR = Math.round(0x00 + t * 0x00);
   const colG = Math.round(0xff - t * 0x99);  // ff → 66
-  const colAA= Math.round(0xaa - t * 0x66);  // aa → 44
-  const col  = (colR << 16) | (colG << 8) | colAA;
+  const colB = Math.round(0xaa - t * 0x66);  // aa → 44
+  const col  = (colG << 8) | colB;
   g.beginFill(col, 0.9 - t * 0.2);
   g.drawCircle(r, r, r - 0.5);
   g.endFill();
   g.beginFill(SERPENT_CORE_COLOR, 0.7);
   g.drawCircle(r, r, r * 0.45);
   g.endFill();
-  if (isHead) {
-    g.beginFill(0xffffff, 0.9);
-    g.drawCircle(r - 3, r - 3, 2.5);
-    g.drawCircle(r + 3, r - 3, 2.5);
-    g.endFill();
-    g.beginFill(0xff0000, 1);
-    g.drawCircle(r - 3, r - 3, 1.2);
-    g.drawCircle(r + 3, r - 3, 1.2);
-    g.endFill();
-  }
   g.pivot.x = r; g.pivot.y = r;
   app.stage.addChild(g);
   return g;
@@ -922,14 +918,22 @@ function updateSerpents(now) {
       continue;
     }
 
-    // ── Head AI: move toward player ──
+    // ── Head AI: move toward player + shoot ──
     const head = s.segs[0];
     const he = head.entity;
     if (he.alive && player && player.alive) {
       const dx = player.x - he.x, dy = player.y - he.y;
       const d = Math.sqrt(dx*dx + dy*dy) || 1;
-      head.vx += (dx/d) * 0.18;
-      head.vy += (dy/d) * 0.18;
+      head.vx += (dx/d) * 0.35;
+      head.vy += (dy/d) * 0.35;
+
+      // Shoot hitter-style bullet toward player
+      if (!s.lastShot) s.lastShot = 0;
+      if (now - s.lastShot > SERPENT_SHOOT_INTERVAL) {
+        s.lastShot = now;
+        spawnBullet(he.x + (dx/d)*14, he.y + (dy/d)*14,
+                    (dx/d)*HITTER_BULLET_SPEED, (dy/d)*HITTER_BULLET_SPEED, null, true);
+      }
     }
 
     // ── Spring physics ──
@@ -1988,8 +1992,8 @@ function applyImpulse(a, b, ox, oy) {
   a.vx+=jt*tx*a.invMass; a.vy+=jt*ty*a.invMass;
   b.vx-=jt*tx*b.invMass; b.vy-=jt*ty*b.invMass;
   const corr=Math.max(Math.min(ox,oy)-0.5,0)/invSum*0.4;
-  a.x-=corr*nx*a.invMass; a.y-=corr*ny*a.invMass;
-  b.x+=corr*nx*b.invMass; b.y+=corr*ny*b.invMass;
+  if (!a._skipPhysics) { a.x-=corr*nx*a.invMass; a.y-=corr*ny*a.invMass; }
+  if (!b._skipPhysics) { b.x+=corr*nx*b.invMass; b.y+=corr*ny*b.invMass; }
 }
 
 // ================================================================
@@ -2077,13 +2081,17 @@ function physicsStep(dt, now) {
       e.vy += (dy / dist) * acc * e.invMass;
       e.sleeping = false; e.sleepN = 0;
 
-      // Bala del jugador en el campo gravitatorio: daña al BH y desaparece
+      // Bala del jugador: sólo daña al BH si está en la zona interior (antes de ser absorbida)
       if (e.type === TYPE.BULLET && !e.isEnemyBullet) {
-        bh.energy -= e.currentDamage;
-        showEnergyBar(bh, now);
-        if (bh.energy <= 0) { bh.alive = false; onEnemyDeath(bh, true); }
-        spawnFragments(e.x, e.y, e.vx * 0.2, e.vy * 0.2, 0xcc00ff, 6);
-        e.alive = false;
+        if (inNoEscape) {
+          // Zona de daño — bala impacta al BH y desaparece
+          bh.energy -= e.currentDamage;
+          showEnergyBar(bh, now);
+          if (bh.energy <= 0) { bh.alive = false; onEnemyDeath(bh, true); }
+          spawnFragments(e.x, e.y, e.vx * 0.2, e.vy * 0.2, 0xcc00ff, 6);
+          e.alive = false;
+        }
+        // En la zona exterior: la gravedad la curva pero no se destruye ni daña al BH
         continue;
       }
 
@@ -2249,6 +2257,16 @@ function hudUpdate(now) {
   if (hudMs < 600) return;
   hudMs = 0;
   elFPS.textContent = "FPS: "+app.ticker.FPS.toFixed(0)+"  objs: "+pool.length;
+
+  // Total mass on field (every alive enemy contributes its ENERGY value as mass)
+  const totalMass = pool.reduce((acc, e) => {
+    if (!e.alive || e.type !== TYPE.ENEMY) return acc;
+    const m = ENERGY[e.variant] ?? 1;
+    // Serpent: count each segment individually
+    return acc + (isFinite(m) ? m : 0);
+  }, 0);
+  document.getElementById('hMass').textContent = 'MASA: ' + totalMass;
+
   if (gameOver) {
     elInfo.textContent = "GAME OVER - reload to play again";
     elPhaseTimer.textContent="✕"; elPhaseTimer.style.color="#ff4444";
