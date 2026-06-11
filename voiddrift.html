@@ -653,9 +653,10 @@ function updateImpulseFlashes() {
 let currentPhase   = 0;
 let phaseStartTime = 0;
 let phaseActive    = false;
-let phase7Started  = false;   // true once the corner-wave has begun
-let phase7NextSpawn = 0;      // timestamp of next corner spawner
-let phase7Count    = 0;       // spawners already released this wave
+let phase7Started  = false;   // true once the current wave has begun
+let phase7NextSpawn = 0;      // timestamp of next enemy spawn
+let phase7Count    = 0;       // enemies already released this wave
+let phase7Wave     = 0;       // 0 = spawners wave, 1 = hitters wave (alternates)
 
 
 const elPhaseTimer = document.getElementById("phaseTimer");
@@ -671,7 +672,7 @@ function startPhase(n, now) {
   currentPhase   = n;
   phaseStartTime = now;
   phaseActive    = true;
-  if (n === 7) { phase7Started = false; phase7Count = 0; phase7NextSpawn = 0; }
+  if (n === 7) { phase7Started = false; phase7Count = 0; phase7NextSpawn = 0; phase7Wave = 0; }
   const config = PHASE_ADD_ENEMIES[n] ?? {};
   for (const [variant, count] of Object.entries(config)) {
     for (let i = 0; i < count; i++) spawnEnemy(variant);
@@ -712,13 +713,15 @@ function phaseUpdate(now) {
 }
 
 // ================================================================
-// FASE 7 — oleada de spawners en las 4 esquinas
+// FASE 7 — oleadas alternas: spawners en esquinas / hitters en lados
 // ================================================================
+const PHASE7_HITTERS_PER_WAVE = 12;   // hitters por oleada de hitters
+const PHASE7_HITTER_INTERVAL  = 300;  // ms entre cada hitter
+
 function phase7Update(now) {
   if (currentPhase !== 7 || paused || gameOver) return;
   const elapsed = now - phaseStartTime;
 
-  // Wait PHASE7_DELAY_MS after phase start before releasing the wave
   if (!phase7Started) {
     if (elapsed < PHASE7_DELAY_MS) return;
     phase7Started = true;
@@ -726,39 +729,59 @@ function phase7Update(now) {
     phase7NextSpawn = now;
   }
 
-  // Total spawners = 4 corners × PHASE7_CORNERS
-  const total = 4 * PHASE7_CORNERS;
-  if (phase7Count >= total) return;
-  if (now < phase7NextSpawn) return;
+  if (phase7Wave % 2 === 0) {
+    // ── SPAWNERS wave ── corners
+    const total = 4 * PHASE7_CORNERS;
+    if (phase7Count >= total) return;
+    if (now < phase7NextSpawn) return;
 
-  // Spawn one spawner at the next corner position
-  const wave  = Math.floor(phase7Count / 4);  // 0..PHASE7_CORNERS-1
-  const corner = phase7Count % 4;              // 0=TL 1=TR 2=BL 3=BR
-  const m = PHASE7_CORNER_MARGIN;
-  const sw = W(), sh = H();
-  const cx = corner === 0 || corner === 2 ? m : sw - m;
-  const cy = corner === 0 || corner === 1 ? m : sh - m;
-  // Small random jitter so they don't stack perfectly
-  const jitter = 20;
-  spawnEnemy('enemy_spawner',
-    cx + (Math.random()-0.5)*jitter,
-    cy + (Math.random()-0.5)*jitter);
+    const wave   = Math.floor(phase7Count / 4);
+    const corner = phase7Count % 4;
+    const m = PHASE7_CORNER_MARGIN;
+    const sw = W(), sh = H();
+    const cx = corner === 0 || corner === 2 ? m : sw - m;
+    const cy = corner === 0 || corner === 1 ? m : sh - m;
+    spawnEnemy('enemy_spawner',
+      cx + (Math.random()-0.5)*20,
+      cy + (Math.random()-0.5)*20);
 
-  phase7Count++;
-  phase7NextSpawn = now + PHASE7_SPAWN_INTERVAL;
+    phase7Count++;
+    phase7NextSpawn = now + PHASE7_SPAWN_INTERVAL;
+  } else {
+    // ── HITTERS wave ── spread along the 4 sides
+    if (phase7Count >= PHASE7_HITTERS_PER_WAVE) return;
+    if (now < phase7NextSpawn) return;
+
+    const sw = W(), sh = H();
+    const side = phase7Count % 4;  // 0=top 1=right 2=bottom 3=left
+    let hx, hy;
+    if (side === 0) { hx = Math.random()*sw; hy = -20; }
+    else if (side === 1) { hx = sw+20; hy = Math.random()*sh; }
+    else if (side === 2) { hx = Math.random()*sw; hy = sh+20; }
+    else { hx = -20; hy = Math.random()*sh; }
+    spawnEnemy('enemy_hitter', hx, hy);
+
+    phase7Count++;
+    phase7NextSpawn = now + PHASE7_HITTER_INTERVAL;
+  }
 }
 
 function phase7RepeatCheck(now) {
   if (currentPhase !== 7 || paused || gameOver) return;
-  // Wave is still in progress — don't restart yet
-  if (phase7Count < 4 * PHASE7_CORNERS) return;
-  // Count living enemies
+  const totalThisWave = phase7Wave % 2 === 0 ? 4 * PHASE7_CORNERS : PHASE7_HITTERS_PER_WAVE;
+  // Wave still in progress — don't restart yet
+  if (phase7Count < totalThisWave) return;
   const liveEnemies = pool.filter(e => e.alive && e.type === TYPE.ENEMY).length;
   if (liveEnemies <= PHASE7_REPEAT_THRESHOLD) {
-    // Restart the corner wave
+    // Advance to next wave type
+    phase7Wave++;
     phase7Started = false;
     phase7Count   = 0;
     phase7NextSpawn = now;
+    // Show brief label announcing the wave type
+    const isHitters = phase7Wave % 2 === 1;
+    elPhaseLabel.textContent = isHitters ? "FASE 7 — ¡HITTERS!" : "FASE 7 — ¡SPAWNERS!";
+    setTimeout(() => { if (currentPhase === 7) elPhaseLabel.textContent = "FASE 7 / " + TOTAL_PHASES; }, 2000);
   }
 }
 
