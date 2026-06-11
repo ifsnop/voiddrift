@@ -172,7 +172,7 @@ const SERPENT_RADIUS     = 10;    // radio de cada segmento
 const SERPENT_REST_LEN   = 48;   // separación entre segmentos (aumentada)
 const SERPENT_SPRING_K   = 0.22; // rigidez del muelle
 const SERPENT_DAMPING    = 0.88; // amortiguación de velocidad
-const SERPENT_SPEED      = 4.2;  // velocidad de la cabeza (más rápida)
+const SERPENT_SPEED      = 2.1;  // velocidad de la cabeza (mitad)
 const SERPENT_ENERGY     = 8;    // vida por segmento
 const SERPENT_COLOR      = 0x22ffaa;
 const SERPENT_CORE_COLOR = 0x004422;
@@ -701,7 +701,11 @@ function startPhase(n, now) {
   currentPhase   = n;
   phaseStartTime = now;
   phaseActive    = true;
-  if (n === 7) { phase7Started = false; phase7Count = 0; phase7NextSpawn = 0; phase7Wave = 0; wavesSinceBlackholeDeath = BLACKHOLE_RESPAWN_WAVES + 1; }
+  if (n === 7) {
+    phase7Started = false; phase7Count = 0; phase7NextSpawn = 0; phase7Wave = 0;
+    wavesSinceBlackholeDeath = BLACKHOLE_RESPAWN_WAVES + 1;
+    s_bhMissingFrom = null; s_lastBHCheck = null; s_lastSerpentSpawn = null;
+  }
   const config = PHASE_ADD_ENEMIES[n] ?? {};
   for (const [variant, count] of Object.entries(config)) {
     for (let i = 0; i < count; i++) spawnEnemy(variant);
@@ -744,38 +748,27 @@ function phaseUpdate(now) {
 }
 
 // ================================================================
-// FASE 7 — oleadas cíclicas infinitas: spawners → hitters → bosses → …
-//          cada oleada incluye también un blackhole
+// FASE 7 — spawn periódico infinito: spawners → hitters → spawners → hitters…
+//          blackhole si no hay ninguno en 30 s
+//          serpent cada 10 s, máximo 5 simultáneas
 // ================================================================
-const PHASE7_HITTERS_PER_WAVE = 12;   // hitters por oleada de hitters
-const PHASE7_HITTER_INTERVAL  = 300;  // ms entre cada hitter
-const PHASE7_BOSS_COUNT       = 3;    // bosses por oleada de bosses
-const PHASE7_BOSS_INTERVAL    = 800;  // ms entre cada boss
+const PHASE7_SPAWNER_COUNT    = 6;     // spawners por oleada
+const PHASE7_SPAWNER_INTERVAL = 800;   // ms entre cada spawner
+const PHASE7_HITTERS_PER_WAVE = 10;   // hitters por oleada
+const PHASE7_HITTER_INTERVAL  = 400;  // ms entre cada hitter
+const PHASE7_BH_TIMEOUT_MS    = 30000; // si no hay BH en este tiempo → spawn uno
+const PHASE7_SERPENT_INTERVAL = 10000; // ms entre spawns de serpient
+const PHASE7_SERPENT_MAX      = 5;    // máximo de serpientes simultáneas
 
-function phase7WaveType() { return phase7Wave % 3; } // 0=spawners, 1=hitters, 2=bosses
+// wave alternates: 0=spawners, 1=hitters
+function phase7WaveType() { return phase7Wave % 2; }
 
 function phase7StartWave(now) {
   phase7Started   = true;
   phase7Count     = 0;
-  phase7NextSpawn = now + 300;
-
-  // Only spawn a blackhole if enough waves have passed since the last one died
-  wavesSinceBlackholeDeath++;
-  const bhAlive = pool.some(e => e.alive && e.variant === 'enemy_blackhole');
-  if (!bhAlive && wavesSinceBlackholeDeath > BLACKHOLE_RESPAWN_WAVES) {
-    wavesSinceBlackholeDeath = 0;
-    const sw = W(), sh = H();
-    const side = Math.floor(Math.random()*4);
-    let bx, by;
-    if (side === 0)      { bx = Math.random()*sw; by = -30; }
-    else if (side === 1) { bx = sw+30; by = Math.random()*sh; }
-    else if (side === 2) { bx = Math.random()*sw; by = sh+30; }
-    else                 { bx = -30; by = Math.random()*sh; }
-    spawnEnemy('enemy_blackhole', bx, by);
-  }
-
-  const labels = ["¡SPAWNERS!", "¡HITTERS!", "¡BOSSES!"];
-  elPhaseLabel.textContent = "FASE 7 — " + labels[phase7WaveType()];
+  phase7NextSpawn = now + 500;
+  const labels = ["SPAWNERS", "HITTERS"];
+  elPhaseLabel.textContent = "FASE 7 — ¡" + labels[phase7WaveType()] + "!";
   setTimeout(() => { if (currentPhase === 7) elPhaseLabel.textContent = "FASE 7 / " + TOTAL_PHASES; }, 2500);
 }
 
@@ -783,65 +776,88 @@ function phase7Update(now) {
   if (currentPhase !== 7 || paused || gameOver) return;
   const elapsed = now - phaseStartTime;
 
+  // ── Iniciar primera oleada tras PHASE7_DELAY_MS ──
   if (!phase7Started) {
     if (elapsed < PHASE7_DELAY_MS) return;
     phase7StartWave(now);
     return;
   }
 
-  const type = phase7WaveType();
+  // ── Spawn periódico de la oleada actual ──
+  if (now >= phase7NextSpawn) {
+    const type = phase7WaveType();
+    const limit = type === 0 ? PHASE7_SPAWNER_COUNT : PHASE7_HITTERS_PER_WAVE;
 
-  if (type === 0) {
-    // ── SPAWNERS: esquinas ──
-    const total = 4 * PHASE7_CORNERS;
-    if (phase7Count >= total || now < phase7NextSpawn) return;
-    const corner = phase7Count % 4;
-    const m = PHASE7_CORNER_MARGIN, sw = W(), sh = H();
-    const cx = corner === 0 || corner === 2 ? m : sw - m;
-    const cy = corner === 0 || corner === 1 ? m : sh - m;
-    spawnEnemy('enemy_spawner', cx + (Math.random()-0.5)*20, cy + (Math.random()-0.5)*20);
-    phase7Count++;
-    phase7NextSpawn = now + PHASE7_SPAWN_INTERVAL;
+    if (phase7Count < limit) {
+      const sw = W(), sh = H();
+      if (type === 0) {
+        // SPAWNERS — distribuidos entre las 4 esquinas
+        const corner = phase7Count % 4;
+        const m = PHASE7_CORNER_MARGIN;
+        const cx = (corner === 0 || corner === 2) ? m : sw - m;
+        const cy = (corner === 0 || corner === 1) ? m : sh - m;
+        spawnEnemy('enemy_spawner', cx + (Math.random()-0.5)*30, cy + (Math.random()-0.5)*30);
+        phase7NextSpawn = now + PHASE7_SPAWNER_INTERVAL;
+      } else {
+        // HITTERS — desde los 4 bordes
+        const side = phase7Count % 4;
+        let hx, hy;
+        if (side === 0)      { hx = Math.random()*sw; hy = -20; }
+        else if (side === 1) { hx = sw+20; hy = Math.random()*sh; }
+        else if (side === 2) { hx = Math.random()*sw; hy = sh+20; }
+        else                 { hx = -20; hy = Math.random()*sh; }
+        spawnEnemy('enemy_hitter', hx, hy);
+        phase7NextSpawn = now + PHASE7_HITTER_INTERVAL;
+      }
+      phase7Count++;
+    } else {
+      // Oleada completada → pasar a la siguiente
+      phase7Wave++;
+      phase7StartWave(now);
+    }
+  }
 
-  } else if (type === 1) {
-    // ── HITTERS: bordes ──
-    if (phase7Count >= PHASE7_HITTERS_PER_WAVE || now < phase7NextSpawn) return;
-    const sw = W(), sh = H();
-    const side = phase7Count % 4;
-    let hx, hy;
-    if (side === 0)      { hx = Math.random()*sw; hy = -20; }
-    else if (side === 1) { hx = sw+20; hy = Math.random()*sh; }
-    else if (side === 2) { hx = Math.random()*sw; hy = sh+20; }
-    else                 { hx = -20; hy = Math.random()*sh; }
-    spawnEnemy('enemy_hitter', hx, hy);
-    phase7Count++;
-    phase7NextSpawn = now + PHASE7_HITTER_INTERVAL;
-
+  // ── Blackhole: spawn si lleva más de 30 s sin ninguno ──
+  if (!s_lastBHCheck) s_lastBHCheck = now;
+  const bhAlive = pool.some(e => e.alive && e.variant === 'enemy_blackhole');
+  if (!bhAlive) {
+    if (!s_bhMissingFrom) s_bhMissingFrom = now;
+    if (now - s_bhMissingFrom >= PHASE7_BH_TIMEOUT_MS) {
+      s_bhMissingFrom = null;
+      const sw = W(), sh = H();
+      const side = Math.floor(Math.random()*4);
+      let bx, by;
+      if (side === 0)      { bx = Math.random()*sw; by = -30; }
+      else if (side === 1) { bx = sw+30; by = Math.random()*sh; }
+      else if (side === 2) { bx = Math.random()*sw; by = sh+30; }
+      else                 { bx = -30; by = Math.random()*sh; }
+      spawnEnemy('enemy_blackhole', bx, by);
+    }
   } else {
-    // ── BOSSES: bordes aleatorios ──
-    if (phase7Count >= PHASE7_BOSS_COUNT || now < phase7NextSpawn) return;
-    const sw = W(), sh = H();
-    const side = Math.floor(Math.random()*4);
-    let bx, by;
-    if (side === 0)      { bx = Math.random()*sw; by = -30; }
-    else if (side === 1) { bx = sw+30; by = Math.random()*sh; }
-    else if (side === 2) { bx = Math.random()*sw; by = sh+30; }
-    else                 { bx = -30; by = Math.random()*sh; }
-    spawnEnemy('enemy_boss', bx, by);
-    phase7Count++;
-    phase7NextSpawn = now + PHASE7_BOSS_INTERVAL;
+    s_bhMissingFrom = null; // reset timer while BH is alive
+  }
+
+  // ── Serpent: spawn cada 10 s si hay menos de 5 activas ──
+  if (!s_lastSerpentSpawn) s_lastSerpentSpawn = now;
+  if (now - s_lastSerpentSpawn >= PHASE7_SERPENT_INTERVAL) {
+    const liveSerpents = serpents.filter(s => s.segs.length > 0).length;
+    if (liveSerpents < PHASE7_SERPENT_MAX) {
+      s_lastSerpentSpawn = now;
+      const sw = W(), sh = H();
+      spawnSerpent(Math.random() * sw, Math.random() * sh);
+    } else {
+      s_lastSerpentSpawn = now; // reset so we retry in 10 s
+    }
   }
 }
 
+// State vars for phase7 timers (prefixed s_ to avoid global conflicts)
+let s_bhMissingFrom   = null;
+let s_lastBHCheck     = null;
+let s_lastSerpentSpawn = null;
+
 function phase7RepeatCheck(now) {
-  if (currentPhase !== 7 || paused || gameOver) return;
-  const totals = [4 * PHASE7_CORNERS, PHASE7_HITTERS_PER_WAVE, PHASE7_BOSS_COUNT];
-  if (phase7Count < totals[phase7WaveType()]) return; // oleada aún en curso
-  const liveEnemies = pool.filter(e => e.alive && e.type === TYPE.ENEMY).length;
-  if (liveEnemies <= PHASE7_REPEAT_THRESHOLD) {
-    phase7Wave++;
-    phase7StartWave(now);
-  }
+  // No longer needed — phase7Update handles wave progression directly
 }
 
 // ================================================================
@@ -942,34 +958,34 @@ function updateSerpents(now) {
       const e = seg.entity;
       if (!e.alive) continue;
 
-      // Spring forces from adjacent segments
-      for (const j of [i-1, i+1]) {
-        if (j < 0 || j >= s.segs.length) continue;
-        const other = s.segs[j].entity;
-        if (!other.alive) continue;
-        const dx = other.x - e.x, dy = other.y - e.y;
-        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-        const stretch = dist - SERPENT_REST_LEN;
-        // Spring force: F = k * stretch, directed toward neighbor
-        const fx = (dx/dist) * stretch * SERPENT_SPRING_K;
-        const fy = (dy/dist) * stretch * SERPENT_SPRING_K;
-        // Head pulls body; body pushes back
-        if (i === 0) {
-          // Head: only spring from next (don't let body drag it back too hard)
-          if (j === 1) { seg.vx += fx * 0.4; seg.vy += fy * 0.4; }
-        } else {
-          seg.vx += fx; seg.vy += fy;
+      if (i === 0) {
+        // ── HEAD: autonomous movement toward player ──
+        // (velocity already applied above in Head AI block)
+        // Cap head speed
+        const speed = Math.sqrt(seg.vx*seg.vx + seg.vy*seg.vy);
+        if (speed > SERPENT_SPEED) { seg.vx *= SERPENT_SPEED/speed; seg.vy *= SERPENT_SPEED/speed; }
+        seg.vx *= SERPENT_DAMPING;
+        seg.vy *= SERPENT_DAMPING;
+      } else {
+        // ── BODY: pulled toward previous segment only (chain drag) ──
+        const prev = s.segs[i - 1].entity;
+        if (prev.alive) {
+          const dx = prev.x - e.x, dy = prev.y - e.y;
+          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+          const stretch = dist - SERPENT_REST_LEN;
+          // Only pull when stretched beyond rest length (no push)
+          if (stretch > 0) {
+            seg.vx += (dx/dist) * stretch * SERPENT_SPRING_K;
+            seg.vy += (dy/dist) * stretch * SERPENT_SPRING_K;
+          }
         }
+        seg.vx *= SERPENT_DAMPING;
+        seg.vy *= SERPENT_DAMPING;
+        // Cap body speed to slightly above head so it can keep up
+        const speed = Math.sqrt(seg.vx*seg.vx + seg.vy*seg.vy);
+        const maxSpd = SERPENT_SPEED * 1.6;
+        if (speed > maxSpd) { seg.vx *= maxSpd/speed; seg.vy *= maxSpd/speed; }
       }
-
-      // Damping
-      seg.vx *= SERPENT_DAMPING;
-      seg.vy *= SERPENT_DAMPING;
-
-      // Speed cap
-      const speed = Math.sqrt(seg.vx*seg.vx + seg.vy*seg.vy);
-      const maxSpd = i === 0 ? SERPENT_SPEED : SERPENT_SPEED * 1.4;
-      if (speed > maxSpd) { seg.vx *= maxSpd/speed; seg.vy *= maxSpd/speed; }
 
       // Apply velocity
       e.x += seg.vx;
@@ -982,13 +998,28 @@ function updateSerpents(now) {
       if (e.y - r < 0)    { e.y = r;    seg.vy = Math.abs(seg.vy); }
       if (e.y + r > sh)   { e.y = sh-r; seg.vy = -Math.abs(seg.vy); }
 
+      // Collide with interior walls
+      for (let wi = 0; wi < pool.length; wi++) {
+        const w = pool[wi];
+        if (!w.alive || w.type !== TYPE.WALL) continue;
+        // AABB overlap between circle (approx square) and wall rect
+        const ox = (r + w.halfW) - Math.abs(e.x - w.x);
+        const oy = (r + w.halfH) - Math.abs(e.y - w.y);
+        if (ox <= 0 || oy <= 0) continue;
+        // Push out along the axis of least overlap
+        if (ox < oy) {
+          const sign = e.x < w.x ? -1 : 1;
+          e.x += ox * sign;
+          seg.vx = Math.abs(seg.vx) * sign * 0.6;
+        } else {
+          const sign = e.y < w.y ? -1 : 1;
+          e.y += oy * sign;
+          seg.vy = Math.abs(seg.vy) * sign * 0.6;
+        }
+      }
+
       // Sync gfx
       if (e.gfx) { e.gfx.x = e.x; e.gfx.y = e.y; }
-
-      // Rotate head toward velocity
-      if (i === 0 && e.gfx && (Math.abs(seg.vx) > 0.1 || Math.abs(seg.vy) > 0.1)) {
-        e.gfx.rotation = Math.atan2(seg.vy, seg.vx) + Math.PI * 0.5;
-      }
     }
 
     // ── Draw elastic line connecting segments ──
