@@ -158,18 +158,36 @@ const BLACKHOLE_DRIFT_ACCEL     = 0.018; // aceleración de deriva lenta (sin ce
 const BLACKHOLE_SIZE            = 28;    // hitbox (cuadrado)
 const BLACKHOLE_ORBIT_SPEED     = 0.18;  // rad/s para órbita mutua entre 2 blackholes
 
+// --- SERPENT ---
+const SERPENT_SEGMENTS   = 7;
+const SERPENT_RADIUS     = 10;    // radio de cada segmento
+const SERPENT_REST_LEN   = 28;   // longitud de reposo del muelle entre segmentos
+const SERPENT_SPRING_K   = 0.18; // rigidez del muelle
+const SERPENT_DAMPING    = 0.82; // amortiguación de velocidad
+const SERPENT_SPEED      = 2.2;  // velocidad de la cabeza persiguiendo al jugador
+const SERPENT_ENERGY     = 8;    // vida por segmento
+const SERPENT_COLOR      = 0x22ffaa;
+const SERPENT_CORE_COLOR = 0x004422;
+
+// --- BLACKHOLE WAVE COOLDOWN ---
+let lastBlackholeDeathTime = -Infinity;  // timestamp of last blackhole death
+const BLACKHOLE_RESPAWN_WAVES = 5;       // must wait this many waves after death
+let wavesSinceBlackholeDeath = BLACKHOLE_RESPAWN_WAVES + 1;  // allow BH on first wave
+
 // --- ENERGÍA ---
 const ENERGY = {
   enemy_basic:1, enemy_heavy:5, enemy_boss:15,
   enemy_spawner:12, enemy_follower:3, enemy_hitter:7,
   enemy_blackhole: 15*10,  // mitad de vida (10x el boss en lugar de 20x)
-  player:10, wall:Infinity
+  player:10, wall:Infinity,
+  enemy_serpent: SERPENT_ENERGY,  // per-segment energy handled separately
 };
 
 // --- DAÑO de enemigos al contacto ---
 const ENEMY_DAMAGE = {
   enemy_basic:1, enemy_heavy:2, enemy_boss:5,
-  enemy_spawner:1, enemy_follower:3, enemy_hitter:2, enemy_blackhole:999
+  enemy_spawner:1, enemy_follower:3, enemy_hitter:2, enemy_blackhole:999,
+  enemy_serpent: 1,
 };
 
 // --- SHIELD ---
@@ -265,6 +283,7 @@ const ENEMY_SIZE = {
   enemy_follower:[20, 20],
   enemy_hitter:  [22, 22],
   enemy_blackhole:[BLACKHOLE_SIZE, BLACKHOLE_SIZE],
+  enemy_serpent:  [SERPENT_RADIUS*2, SERPENT_RADIUS*2],
 };
 const ENEMY_COLOR = {
   enemy_basic:   0x4488ff,
@@ -274,6 +293,7 @@ const ENEMY_COLOR = {
   enemy_follower:0x44ff88,
   enemy_hitter:  0xff4466,
   enemy_blackhole:0x110022,
+  enemy_serpent:  SERPENT_COLOR,
 };
 const COLOR = {
   player:0x00ffcc, wall:0x5577aa,
@@ -672,7 +692,7 @@ function startPhase(n, now) {
   currentPhase   = n;
   phaseStartTime = now;
   phaseActive    = true;
-  if (n === 7) { phase7Started = false; phase7Count = 0; phase7NextSpawn = 0; phase7Wave = 0; }
+  if (n === 7) { phase7Started = false; phase7Count = 0; phase7NextSpawn = 0; phase7Wave = 0; wavesSinceBlackholeDeath = BLACKHOLE_RESPAWN_WAVES + 1; }
   const config = PHASE_ADD_ENEMIES[n] ?? {};
   for (const [variant, count] of Object.entries(config)) {
     for (let i = 0; i < count; i++) spawnEnemy(variant);
@@ -730,15 +750,20 @@ function phase7StartWave(now) {
   phase7Count     = 0;
   phase7NextSpawn = now + 300;
 
-  // Un blackhole al inicio de cada oleada, desde un borde aleatorio
-  const sw = W(), sh = H();
-  const side = Math.floor(Math.random()*4);
-  let bx, by;
-  if (side === 0)      { bx = Math.random()*sw; by = -30; }
-  else if (side === 1) { bx = sw+30; by = Math.random()*sh; }
-  else if (side === 2) { bx = Math.random()*sw; by = sh+30; }
-  else                 { bx = -30; by = Math.random()*sh; }
-  spawnEnemy('enemy_blackhole', bx, by);
+  // Only spawn a blackhole if enough waves have passed since the last one died
+  wavesSinceBlackholeDeath++;
+  const bhAlive = pool.some(e => e.alive && e.variant === 'enemy_blackhole');
+  if (!bhAlive && wavesSinceBlackholeDeath > BLACKHOLE_RESPAWN_WAVES) {
+    wavesSinceBlackholeDeath = 0;
+    const sw = W(), sh = H();
+    const side = Math.floor(Math.random()*4);
+    let bx, by;
+    if (side === 0)      { bx = Math.random()*sw; by = -30; }
+    else if (side === 1) { bx = sw+30; by = Math.random()*sh; }
+    else if (side === 2) { bx = Math.random()*sw; by = sh+30; }
+    else                 { bx = -30; by = Math.random()*sh; }
+    spawnEnemy('enemy_blackhole', bx, by);
+  }
 
   const labels = ["¡SPAWNERS!", "¡HITTERS!", "¡BOSSES!"];
   elPhaseLabel.textContent = "FASE 7 — " + labels[phase7WaveType()];
@@ -807,6 +832,182 @@ function phase7RepeatCheck(now) {
   if (liveEnemies <= PHASE7_REPEAT_THRESHOLD) {
     phase7Wave++;
     phase7StartWave(now);
+  }
+}
+
+// ================================================================
+// SERPENT ENEMY — segmented spring chain
+// ================================================================
+const serpents = []; // each entry: { segments: [{entity,vx,vy}], lineGfx }
+
+function buildSegmentGfx(segIndex) {
+  const g = new PIXI.Graphics();
+  const r = SERPENT_RADIUS;
+  const isHead = segIndex === 0;
+  // Fade from bright green (head) to dark teal (tail)
+  const t = segIndex / (SERPENT_SEGMENTS - 1);  // 0=head, 1=tail
+  const colR = Math.round(0x00 + t * 0x00);
+  const colG = Math.round(0xff - t * 0x99);  // ff → 66
+  const colAA= Math.round(0xaa - t * 0x66);  // aa → 44
+  const col  = (colR << 16) | (colG << 8) | colAA;
+  g.beginFill(col, 0.9 - t * 0.2);
+  g.drawCircle(r, r, r - 0.5);
+  g.endFill();
+  g.beginFill(SERPENT_CORE_COLOR, 0.7);
+  g.drawCircle(r, r, r * 0.45);
+  g.endFill();
+  if (isHead) {
+    g.beginFill(0xffffff, 0.9);
+    g.drawCircle(r - 3, r - 3, 2.5);
+    g.drawCircle(r + 3, r - 3, 2.5);
+    g.endFill();
+    g.beginFill(0xff0000, 1);
+    g.drawCircle(r - 3, r - 3, 1.2);
+    g.drawCircle(r + 3, r - 3, 1.2);
+    g.endFill();
+  }
+  g.pivot.x = r; g.pivot.y = r;
+  app.stage.addChild(g);
+  return g;
+}
+
+function spawnSerpent(sx, sy) {
+  const segs = [];
+  for (let i = 0; i < SERPENT_SEGMENTS; i++) {
+    const x = sx - i * SERPENT_REST_LEN;
+    const y = sy;
+    const r = SERPENT_RADIUS;
+    const e = makeEntity(TYPE.ENEMY, 'enemy_serpent', x, y, r*2, r*2, 0, 0, 1, SERPENT_COLOR);
+    e.energy    = SERPENT_ENERGY;
+    e.maxEnergy = SERPENT_ENERGY;
+    e.restitution = 0.2;
+    e.friction    = 0.3;
+    e._serpentImmune = true;
+    e._isSerpentSeg = true;
+    e._skipPhysics  = true;  // physicsStep skips position integration; serpent handles it
+    e.gfx = buildSegmentGfx(i);
+    e.gfx.x = x; e.gfx.y = y;
+    pool.push(e);
+    segs.push({ entity: e, vx: 0, vy: 0 });
+    spawnBirthEffect(x, y, SERPENT_COLOR, r * 2);
+  }
+
+  const lineGfx = new PIXI.Graphics();
+  app.stage.addChildAt(lineGfx, 0); // behind everything
+  serpents.push({ segs, lineGfx });
+}
+
+function updateSerpents(now) {
+  for (let si = serpents.length - 1; si >= 0; si--) {
+    const s = serpents[si];
+
+    // Remove dead segments, prune from tail first to keep chain coherent
+    for (let i = s.segs.length - 1; i >= 0; i--) {
+      const seg = s.segs[i];
+      if (!seg.entity.alive) {
+        if (seg.entity.gfx) {
+          app.stage.removeChild(seg.entity.gfx);
+          seg.entity.gfx.destroy();
+          seg.entity.gfx = null;
+        }
+        // Score only if player killed (handled in onCollision/onEnemyDeath)
+        s.segs.splice(i, 1);
+      }
+    }
+
+    // If all segments gone, remove serpent
+    if (s.segs.length === 0) {
+      app.stage.removeChild(s.lineGfx); s.lineGfx.destroy();
+      serpents.splice(si, 1);
+      continue;
+    }
+
+    // ── Head AI: move toward player ──
+    const head = s.segs[0];
+    const he = head.entity;
+    if (he.alive && player && player.alive) {
+      const dx = player.x - he.x, dy = player.y - he.y;
+      const d = Math.sqrt(dx*dx + dy*dy) || 1;
+      head.vx += (dx/d) * 0.18;
+      head.vy += (dy/d) * 0.18;
+    }
+
+    // ── Spring physics ──
+    for (let i = 0; i < s.segs.length; i++) {
+      const seg = s.segs[i];
+      const e = seg.entity;
+      if (!e.alive) continue;
+
+      // Spring forces from adjacent segments
+      for (const j of [i-1, i+1]) {
+        if (j < 0 || j >= s.segs.length) continue;
+        const other = s.segs[j].entity;
+        if (!other.alive) continue;
+        const dx = other.x - e.x, dy = other.y - e.y;
+        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        const stretch = dist - SERPENT_REST_LEN;
+        // Spring force: F = k * stretch, directed toward neighbor
+        const fx = (dx/dist) * stretch * SERPENT_SPRING_K;
+        const fy = (dy/dist) * stretch * SERPENT_SPRING_K;
+        // Head pulls body; body pushes back
+        if (i === 0) {
+          // Head: only spring from next (don't let body drag it back too hard)
+          if (j === 1) { seg.vx += fx * 0.4; seg.vy += fy * 0.4; }
+        } else {
+          seg.vx += fx; seg.vy += fy;
+        }
+      }
+
+      // Damping
+      seg.vx *= SERPENT_DAMPING;
+      seg.vy *= SERPENT_DAMPING;
+
+      // Speed cap
+      const speed = Math.sqrt(seg.vx*seg.vx + seg.vy*seg.vy);
+      const maxSpd = i === 0 ? SERPENT_SPEED : SERPENT_SPEED * 1.4;
+      if (speed > maxSpd) { seg.vx *= maxSpd/speed; seg.vy *= maxSpd/speed; }
+
+      // Apply velocity
+      e.x += seg.vx;
+      e.y += seg.vy;
+
+      // Bounce off screen edges
+      const sw = W(), sh = H(), r = SERPENT_RADIUS;
+      if (e.x - r < 0)    { e.x = r;    seg.vx = Math.abs(seg.vx); }
+      if (e.x + r > sw)   { e.x = sw-r; seg.vx = -Math.abs(seg.vx); }
+      if (e.y - r < 0)    { e.y = r;    seg.vy = Math.abs(seg.vy); }
+      if (e.y + r > sh)   { e.y = sh-r; seg.vy = -Math.abs(seg.vy); }
+
+      // Sync gfx
+      if (e.gfx) { e.gfx.x = e.x; e.gfx.y = e.y; }
+
+      // Rotate head toward velocity
+      if (i === 0 && e.gfx && (Math.abs(seg.vx) > 0.1 || Math.abs(seg.vy) > 0.1)) {
+        e.gfx.rotation = Math.atan2(seg.vy, seg.vx) + Math.PI * 0.5;
+      }
+    }
+
+    // ── Draw elastic line connecting segments ──
+    s.lineGfx.clear();
+    if (s.segs.length >= 2) {
+      for (let i = 0; i < s.segs.length - 1; i++) {
+        const a = s.segs[i].entity, b = s.segs[i+1].entity;
+        if (!a.alive || !b.alive) continue;
+        // Stretch factor for color/thickness
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        const stretch = Math.max(0, dist / SERPENT_REST_LEN - 1);
+        const thick = Math.max(1.5, 4 - i * 0.3);
+        const alpha = 0.85 - i * 0.06;
+        // Shift from green→red as segment stretches beyond rest length
+        const gr = Math.round(255 * Math.max(0, 1 - stretch * 2.5));
+        const rb = Math.round(180 * Math.max(0, 1 - stretch * 1.5));
+        const lineCol = (Math.min(255, Math.round(stretch * 3 * 255)) << 16) | (gr << 8) | rb;
+        s.lineGfx.lineStyle(thick, lineCol || SERPENT_COLOR, alpha);
+        s.lineGfx.moveTo(a.x, a.y);
+        s.lineGfx.lineTo(b.x, b.y);
+      }
+    }
   }
 }
 
@@ -1013,6 +1214,7 @@ const ENEMY_FX_RATE = {
   enemy_follower: 180,
   enemy_hitter:   200,
   enemy_blackhole: 60,
+  enemy_serpent:  180,
 };
 
 const enemyParticles = [];
@@ -1076,7 +1278,12 @@ function emitEnemyFx(e, now) {
       life = 400; shape = 'rect';
       break;
 
-    case 'enemy_blackhole':
+    case 'enemy_serpent':
+      col = Math.random() > 0.5 ? 0x22ffaa : 0x00cc88;
+      sz = 1.5 + Math.random()*2;
+      vx = (Math.random()-0.5)*1.5; vy = (Math.random()-0.5)*1.5;
+      life = 350; shape = 'circle';
+      break;
       // Partículas violeta oscuro que espiralan hacia adentro
       col = Math.random()>0.5 ? 0xcc00ff : 0x440066;
       sz = 1.5 + Math.random()*2.5;
@@ -1649,6 +1856,8 @@ function onEnemyDeath(enemy, playerKill = false) {
     spawnFragments(ex, ey, evx, evy, col, 45);
     spawnFragments(ex, ey, evx, evy, 0xff2244, 20);
   } else if (enemy.variant === 'enemy_blackhole') {
+    lastBlackholeDeathTime = performance.now();
+    wavesSinceBlackholeDeath = 0;
     // Massive implosion-explosion
     spawnFragments(ex, ey, evx, evy, 0xcc00ff, 80);
     spawnFragments(ex, ey, evx, evy, 0xff9900, 50);
@@ -1656,6 +1865,9 @@ function onEnemyDeath(enemy, playerKill = false) {
     spawnSpawnerPulse(ex, ey);
     setTimeout(()=> spawnSpawnerPulse(ex, ey), 120);
     setTimeout(()=> spawnSpawnerPulse(ex, ey), 280);
+  } else if (enemy.variant === 'enemy_serpent') {
+    spawnFragments(ex, ey, evx, evy, SERPENT_COLOR, 20);
+    spawnFragments(ex, ey, evx, evy, 0x004422, 8);
   } else {
     spawnFragments(ex, ey, evx, evy, col, 28);
   }
@@ -1787,7 +1999,7 @@ function physicsStep(dt, now) {
   const sw=W(), sh=H();
   for (let i=0; i<pool.length; i++) {
     const e=pool[i];
-    if (!e.alive||e.invMass===0||e.sleeping) continue;
+    if (!e.alive||e.invMass===0||e.sleeping||e._skipPhysics) continue;
     e.x+=e.vx*dt; e.y+=e.vy*dt;
     if (e.type===TYPE.BULLET) {
       if (e.x<-40||e.x>sw+40||e.y<-40||e.y>sh+40) e.alive=false;
@@ -1848,6 +2060,8 @@ function physicsStep(dt, now) {
       if (!e.alive || e === bh || e.invMass === 0) continue;
       // Blackholes no se atraen entre sí en la fase de gravedad (lo hace el AI)
       if (e.variant === 'enemy_blackhole') continue;
+      // Serpientes inmunes a la gravedad del agujero negro
+      if (e._serpentImmune) continue;
 
       const dx = bh.x - e.x, dy = bh.y - e.y;
       const dist = Math.sqrt(dx*dx + dy*dy) || 1;
@@ -1863,17 +2077,18 @@ function physicsStep(dt, now) {
       e.vy += (dy / dist) * acc * e.invMass;
       e.sleeping = false; e.sleepN = 0;
 
-      // Núcleo: destrucción instantánea
+      // Bala del jugador en el campo gravitatorio: daña al BH y desaparece
+      if (e.type === TYPE.BULLET && !e.isEnemyBullet) {
+        bh.energy -= e.currentDamage;
+        showEnergyBar(bh, now);
+        if (bh.energy <= 0) { bh.alive = false; onEnemyDeath(bh, true); }
+        spawnFragments(e.x, e.y, e.vx * 0.2, e.vy * 0.2, 0xcc00ff, 6);
+        e.alive = false;
+        continue;
+      }
+
+      // Núcleo: destrucción de otras entidades
       if (dist < bh.halfW + Math.max(e.halfW, e.halfH)) {
-        if (e.type === TYPE.BULLET && !e.isEnemyBullet) {
-          // Bala del jugador: primero aplica daño al blackhole, luego desaparece
-          bh.energy -= e.currentDamage;
-          showEnergyBar(bh, now);
-          if (bh.energy <= 0) { bh.alive = false; onEnemyDeath(bh, true); }
-          spawnFragments(e.x, e.y, e.vx * 0.2, e.vy * 0.2, 0xcc00ff, 6);
-          e.alive = false;
-          continue;
-        }
         // El blackhole absorbe la entidad — su masa infinita no se ve afectada en posición
         const absorbedMass = ENERGY[e.variant] ?? 1;
         bh._massAbsorbed = Math.min((bh._massAbsorbed||0) + absorbedMass, 4*15);  // cap: 4 x enemy_boss
@@ -1942,6 +2157,7 @@ window.addEventListener("keydown", e => {
   if (e.code==="KeyB") { spawnEnemy("enemy_follower");return; }
   if (e.code==="KeyN") { spawnEnemy("enemy_hitter");  return; }
   if (e.code==="KeyM") { spawnEnemy("enemy_blackhole"); return; }
+  if (e.code==="Comma") { spawnSerpent(Math.random()*W(), Math.random()*H()); return; }
   if (e.code==="Space")  { keys["Space"]=true; return; }
   if (e.code==="KeyQ") { addLockTarget(); return; }
   if (e.code==="KeyE") { fireMissile(); return; }
@@ -2549,6 +2765,7 @@ app.ticker.add(() => {
     inputUpdate(now);
     updateBulletFade();
     physicsStep(dt, now);
+    updateSerpents(now);
     purge();
     syncGraphics();
     updateEnergyBars(now);
@@ -2690,6 +2907,13 @@ function startGame() {
     if (e.gfx)     { app.stage.removeChild(e.gfx);     e.gfx.destroy();     e.gfx = null; }
     if (e._ringGfx){ app.stage.removeChild(e._ringGfx); e._ringGfx.destroy(); e._ringGfx = null; }
   }
+  for (const s of serpents) {
+    app.stage.removeChild(s.lineGfx); s.lineGfx.destroy();
+    for (const seg of s.segs) {
+      if (seg.entity.gfx) { app.stage.removeChild(seg.entity.gfx); seg.entity.gfx.destroy(); }
+    }
+  }
+  serpents.length = 0;
   pool.length = 0;
   // Reset state
   clearIntroEnemies();
