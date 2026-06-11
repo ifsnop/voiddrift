@@ -697,10 +697,12 @@ function phaseUpdate(now) {
     if (currentPhase < TOTAL_PHASES) {
       startPhase(currentPhase + 1, now);
     } else {
-      phaseActive = false;
-      elPhaseTimer.textContent = "FIN";
-      elPhaseTimer.style.color = "#ffcc00";
-      elPhaseLabel.textContent = "¡COMPLETADO!";
+      // Phase 7 runs indefinitely — just freeze timer display, don't end
+      elPhaseTimer.textContent = "∞";
+      elPhaseTimer.style.color = "#ff4444";
+      elPhaseTimer.style.textShadow = "0 0 16px #ff4444, 0 0 4px #fff";
+      // Keep phaseActive = true so phase7Update/RepeatCheck keep running
+      phaseStartTime = now; // reset so timer doesn't go negative
     }
   }
   // Auto-advance phases 1-6 if all enemies cleared
@@ -713,10 +715,35 @@ function phaseUpdate(now) {
 }
 
 // ================================================================
-// FASE 7 — oleadas alternas: spawners en esquinas / hitters en lados
+// FASE 7 — oleadas cíclicas infinitas: spawners → hitters → bosses → …
+//          cada oleada incluye también un blackhole
 // ================================================================
 const PHASE7_HITTERS_PER_WAVE = 12;   // hitters por oleada de hitters
 const PHASE7_HITTER_INTERVAL  = 300;  // ms entre cada hitter
+const PHASE7_BOSS_COUNT       = 3;    // bosses por oleada de bosses
+const PHASE7_BOSS_INTERVAL    = 800;  // ms entre cada boss
+
+function phase7WaveType() { return phase7Wave % 3; } // 0=spawners, 1=hitters, 2=bosses
+
+function phase7StartWave(now) {
+  phase7Started   = true;
+  phase7Count     = 0;
+  phase7NextSpawn = now + 300;
+
+  // Un blackhole al inicio de cada oleada, desde un borde aleatorio
+  const sw = W(), sh = H();
+  const side = Math.floor(Math.random()*4);
+  let bx, by;
+  if (side === 0)      { bx = Math.random()*sw; by = -30; }
+  else if (side === 1) { bx = sw+30; by = Math.random()*sh; }
+  else if (side === 2) { bx = Math.random()*sw; by = sh+30; }
+  else                 { bx = -30; by = Math.random()*sh; }
+  spawnEnemy('enemy_blackhole', bx, by);
+
+  const labels = ["¡SPAWNERS!", "¡HITTERS!", "¡BOSSES!"];
+  elPhaseLabel.textContent = "FASE 7 — " + labels[phase7WaveType()];
+  setTimeout(() => { if (currentPhase === 7) elPhaseLabel.textContent = "FASE 7 / " + TOTAL_PHASES; }, 2500);
+}
 
 function phase7Update(now) {
   if (currentPhase !== 7 || paused || gameOver) return;
@@ -724,64 +751,62 @@ function phase7Update(now) {
 
   if (!phase7Started) {
     if (elapsed < PHASE7_DELAY_MS) return;
-    phase7Started = true;
-    phase7Count   = 0;
-    phase7NextSpawn = now;
+    phase7StartWave(now);
+    return;
   }
 
-  if (phase7Wave % 2 === 0) {
-    // ── SPAWNERS wave ── corners
-    const total = 4 * PHASE7_CORNERS;
-    if (phase7Count >= total) return;
-    if (now < phase7NextSpawn) return;
+  const type = phase7WaveType();
 
-    const wave   = Math.floor(phase7Count / 4);
+  if (type === 0) {
+    // ── SPAWNERS: esquinas ──
+    const total = 4 * PHASE7_CORNERS;
+    if (phase7Count >= total || now < phase7NextSpawn) return;
     const corner = phase7Count % 4;
-    const m = PHASE7_CORNER_MARGIN;
-    const sw = W(), sh = H();
+    const m = PHASE7_CORNER_MARGIN, sw = W(), sh = H();
     const cx = corner === 0 || corner === 2 ? m : sw - m;
     const cy = corner === 0 || corner === 1 ? m : sh - m;
-    spawnEnemy('enemy_spawner',
-      cx + (Math.random()-0.5)*20,
-      cy + (Math.random()-0.5)*20);
-
+    spawnEnemy('enemy_spawner', cx + (Math.random()-0.5)*20, cy + (Math.random()-0.5)*20);
     phase7Count++;
     phase7NextSpawn = now + PHASE7_SPAWN_INTERVAL;
-  } else {
-    // ── HITTERS wave ── spread along the 4 sides
-    if (phase7Count >= PHASE7_HITTERS_PER_WAVE) return;
-    if (now < phase7NextSpawn) return;
 
+  } else if (type === 1) {
+    // ── HITTERS: bordes ──
+    if (phase7Count >= PHASE7_HITTERS_PER_WAVE || now < phase7NextSpawn) return;
     const sw = W(), sh = H();
-    const side = phase7Count % 4;  // 0=top 1=right 2=bottom 3=left
+    const side = phase7Count % 4;
     let hx, hy;
-    if (side === 0) { hx = Math.random()*sw; hy = -20; }
+    if (side === 0)      { hx = Math.random()*sw; hy = -20; }
     else if (side === 1) { hx = sw+20; hy = Math.random()*sh; }
     else if (side === 2) { hx = Math.random()*sw; hy = sh+20; }
-    else { hx = -20; hy = Math.random()*sh; }
+    else                 { hx = -20; hy = Math.random()*sh; }
     spawnEnemy('enemy_hitter', hx, hy);
-
     phase7Count++;
     phase7NextSpawn = now + PHASE7_HITTER_INTERVAL;
+
+  } else {
+    // ── BOSSES: bordes aleatorios ──
+    if (phase7Count >= PHASE7_BOSS_COUNT || now < phase7NextSpawn) return;
+    const sw = W(), sh = H();
+    const side = Math.floor(Math.random()*4);
+    let bx, by;
+    if (side === 0)      { bx = Math.random()*sw; by = -30; }
+    else if (side === 1) { bx = sw+30; by = Math.random()*sh; }
+    else if (side === 2) { bx = Math.random()*sw; by = sh+30; }
+    else                 { bx = -30; by = Math.random()*sh; }
+    spawnEnemy('enemy_boss', bx, by);
+    phase7Count++;
+    phase7NextSpawn = now + PHASE7_BOSS_INTERVAL;
   }
 }
 
 function phase7RepeatCheck(now) {
   if (currentPhase !== 7 || paused || gameOver) return;
-  const totalThisWave = phase7Wave % 2 === 0 ? 4 * PHASE7_CORNERS : PHASE7_HITTERS_PER_WAVE;
-  // Wave still in progress — don't restart yet
-  if (phase7Count < totalThisWave) return;
+  const totals = [4 * PHASE7_CORNERS, PHASE7_HITTERS_PER_WAVE, PHASE7_BOSS_COUNT];
+  if (phase7Count < totals[phase7WaveType()]) return; // oleada aún en curso
   const liveEnemies = pool.filter(e => e.alive && e.type === TYPE.ENEMY).length;
   if (liveEnemies <= PHASE7_REPEAT_THRESHOLD) {
-    // Advance to next wave type
     phase7Wave++;
-    phase7Started = false;
-    phase7Count   = 0;
-    phase7NextSpawn = now;
-    // Show brief label announcing the wave type
-    const isHitters = phase7Wave % 2 === 1;
-    elPhaseLabel.textContent = isHitters ? "FASE 7 — ¡HITTERS!" : "FASE 7 — ¡SPAWNERS!";
-    setTimeout(() => { if (currentPhase === 7) elPhaseLabel.textContent = "FASE 7 / " + TOTAL_PHASES; }, 2000);
+    phase7StartWave(now);
   }
 }
 
