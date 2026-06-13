@@ -2,6 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Game Engine - Fases</title>
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
@@ -62,6 +63,18 @@
     position: fixed; inset: 0; z-index: 90;
     pointer-events: none; display: none;
   }
+  /* Mobile joystick zones */
+  .joystick-zone {
+    position: fixed;
+    bottom: 0;
+    width: 50%;
+    height: 55%;
+    z-index: 15;
+    display: none; /* hidden by default, shown on touch devices */
+    touch-action: none;
+  }
+  #zone-left { left: 0; }
+  #zone-right { right: 0; }
   #overlay .tables { display: flex; gap: 40px; }
   #overlay table { border-collapse: collapse; font-size: 0.78rem; }
   #overlay th { color: #00ffcc; padding: 3px 12px; text-align: left;
@@ -82,6 +95,8 @@
 <div id="scoreHud"><span id="hScore">0</span></div>
 <div id="massHud"><span id="hMass">MASA: 0</span></div>
 <canvas id="deathExplosion"></canvas>
+<div id="zone-left" class="joystick-zone"></div>
+<div id="zone-right" class="joystick-zone"></div>
 <div id="overlay">
   <h1>SPACE SHOOTER</h1>
   <div class="sub">Las mejores partidas</div>
@@ -99,6 +114,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nipplejs@0.10.2/dist/nipplejs.min.js"></script>
 <script>
 // ================================================================
 // CONSTANTS - edita aqui para rebalancear el juego
@@ -2169,6 +2185,7 @@ function physicsStep(dt, now) {
 // ================================================================
 const keys  = {};
 const mouse = { x:0, y:0, down:false };
+let isMobileControlsActive = false;
 let player = null, lastShot = 0, currentWeapon = "normal";
 let autoBeamOn = false;        // arma 4: toggle
 let autoBeamTarget = null;     // entidad objetivo actual
@@ -2203,9 +2220,9 @@ window.addEventListener("keydown", e => {
   keys[e.code]=true; e.preventDefault();
 });
 window.addEventListener("keyup",     e => { keys[e.code]=false; });
-window.addEventListener("mousemove", e => { mouse.x=e.clientX; mouse.y=e.clientY; });
-window.addEventListener("mousedown", e => { if(e.button===0) mouse.down=true;  });
-window.addEventListener("mouseup",   e => { if(e.button===0) mouse.down=false; });
+window.addEventListener("mousemove", e => { if(!isMobileControlsActive) { mouse.x=e.clientX; mouse.y=e.clientY; } });
+window.addEventListener("mousedown", e => { if(!isMobileControlsActive && e.button===0) mouse.down=true;  });
+window.addEventListener("mouseup",   e => { if(!isMobileControlsActive && e.button===0) mouse.down=false; });
 
 function inputUpdate(now) {
   if (!player||!player.alive) return;
@@ -3001,6 +3018,127 @@ renderLB();
 // setup() called to initialize stage objects (warpGrid etc.) but game won't run
 setup();
 showOverlay(false);
+
+// ================================================================
+// MOBILE TOUCH CONTROLS (nipplejs)
+// ================================================================
+(function initMobileControls() {
+  const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+  if (!isTouchDevice) return;
+  isMobileControlsActive = true;
+
+  // Prevent all default touch behavior on the canvas to avoid scroll/zoom
+  const pixiCanvas = app.view;
+  pixiCanvas.style.touchAction = 'none';
+  document.body.style.touchAction = 'none';
+
+  // Show joystick zones
+  const zoneLeft  = document.getElementById('zone-left');
+  const zoneRight = document.getElementById('zone-right');
+  zoneLeft.style.display  = 'block';
+  zoneRight.style.display = 'block';
+
+  // Adjust HUD for mobile: move score and mass so they don't overlap joystick zones
+  const scoreHud = document.getElementById('scoreHud');
+  if (scoreHud) { scoreHud.style.bottom = 'auto'; scoreHud.style.top = '8px'; scoreHud.style.fontSize = '40px'; }
+  const massHud = document.getElementById('massHud');
+  if (massHud) { massHud.style.bottom = 'auto'; massHud.style.top = '60px'; massHud.style.fontSize = '18px'; }
+
+  // Hide the keyboard-hint from click-hint on mobile
+  const clickHint = document.querySelector('#overlay .click-hint');
+  if (clickHint) clickHint.textContent = 'TOCA para comenzar';
+
+  // ---- LEFT JOYSTICK: AIM + FIRE ----
+  const joyLeft = nipplejs.create({
+    zone: zoneLeft,
+    mode: 'dynamic',
+    position: { left: '50%', top: '50%' },
+    color: 'rgba(255, 255, 100, 0.35)',
+    size: 120,
+    threshold: 0.05,
+    fadeTime: 150,
+    multitouch: true,
+    maxNumberOfNipples: 1,
+    dataOnly: false,
+    restOpacity: 0.3,
+  });
+
+  joyLeft.on('move', function(evt, data) {
+    if (!player || !player.alive || gameOver || paused) return;
+    // data.vector: { x: -1..1, y: -1..1 } where y+ = up (math coords)
+    const vx = data.vector.x;
+    const vy = -data.vector.y; // flip for screen coords (y+ = down)
+    // Set mouse position far from player in the joystick direction
+    mouse.x = player.x + vx * 400;
+    mouse.y = player.y + vy * 400;
+    // Auto-fire while aiming
+    mouse.down = true;
+  });
+
+  joyLeft.on('end', function() {
+    mouse.down = false;
+  });
+
+  // ---- RIGHT JOYSTICK: MOVEMENT ----
+  const joyRight = nipplejs.create({
+    zone: zoneRight,
+    mode: 'dynamic',
+    position: { left: '50%', top: '50%' },
+    color: 'rgba(0, 255, 200, 0.35)',
+    size: 120,
+    threshold: 0.05,
+    fadeTime: 150,
+    multitouch: true,
+    maxNumberOfNipples: 1,
+    dataOnly: false,
+    restOpacity: 0.3,
+  });
+
+  // Track which keys are being simulated by the right joystick
+  let touchKeys = { KeyW: false, KeyA: false, KeyS: false, KeyD: false };
+
+  function clearTouchKeys() {
+    for (const k in touchKeys) {
+      if (touchKeys[k]) { keys[k] = false; touchKeys[k] = false; }
+    }
+  }
+
+  joyRight.on('move', function(evt, data) {
+    if (!player || !player.alive || gameOver || paused) return;
+    const vx = data.vector.x;
+    const vy = data.vector.y; // nipplejs: y+ = up (math)
+    const deadzone = 0.25;
+
+    // Clear previous touch keys before setting new ones
+    clearTouchKeys();
+
+    if (vx > deadzone)  { keys.KeyD = true; touchKeys.KeyD = true; }
+    if (vx < -deadzone) { keys.KeyA = true; touchKeys.KeyA = true; }
+    if (vy > deadzone)  { keys.KeyW = true; touchKeys.KeyW = true; }  // y+ = up = KeyW
+    if (vy < -deadzone) { keys.KeyS = true; touchKeys.KeyS = true; }  // y- = down = KeyS
+  });
+
+  joyRight.on('end', function() {
+    clearTouchKeys();
+  });
+
+  // Prevent context menu on long press
+  document.addEventListener('contextmenu', function(e) { e.preventDefault(); }, { passive: false });
+
+  // Prevent pinch-zoom and double-tap zoom on mobile
+  document.addEventListener('touchmove', function(e) {
+    if (e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
+
+  // Prevent double-tap zoom
+  let lastTapTime = 0;
+  document.addEventListener('touchend', function(e) {
+    const now = Date.now();
+    if (now - lastTapTime < 300) e.preventDefault();
+    lastTapTime = now;
+  }, { passive: false });
+
+})();
 </script>
 </body>
 </html>
