@@ -2,10 +2,13 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Game Engine - Fases</title>
   <style>
-    body { margin: 0; overflow: hidden; background: #111; }
+    body { margin: 0; overflow: hidden; background: #111; position: fixed; inset: 0; width: 100%; height: 100%; }
+    /* Fullscreen: hide browser chrome on mobile */
+    html { overflow: hidden; height: 100%; }
+    canvas { display: block; touch-action: none; }
     #hud {
       position: fixed; top: 8px; left: 12px;
       color: #fff; font: 14px monospace;
@@ -70,7 +73,7 @@
     width: 50%;
     height: 55%;
     z-index: 15;
-    display: none; /* hidden by default, shown on touch devices */
+    display: none;
     touch-action: none;
   }
   #zone-left { left: 0; }
@@ -179,13 +182,13 @@ const BLACKHOLE_BASE_FORCE      = 2;     // fuerza a la mitad
 const BLACKHOLE_FORCE_PER_MASS  = 0.04;  // crecimiento de fuerza muy lento
 const BLACKHOLE_ESCAPE_FRAC     = 0.15;  // solo el 15% interior es zona de no-escape
 const BLACKHOLE_DRIFT_ACCEL     = 0.018; // aceleración de deriva lenta (sin centro fijo)
-const BLACKHOLE_SIZE            = 28;    // hitbox (cuadrado)
+let BLACKHOLE_SIZE            = 28;    // hitbox (cuadrado)
 const BLACKHOLE_ORBIT_SPEED     = 0.18;  // rad/s para órbita mutua entre 2 blackholes
 
 // --- SERPENT ---
 const SERPENT_SEGMENTS   = 7;
-const SERPENT_RADIUS     = 10;    // radio de cada segmento
-const SERPENT_REST_LEN   = 48;   // separación entre segmentos (aumentada)
+let SERPENT_RADIUS     = 10;    // radio de cada segmento
+let SERPENT_REST_LEN   = 48;   // separación entre segmentos (aumentada)
 const SERPENT_SPRING_K   = 0.22; // rigidez del muelle
 const SERPENT_DAMPING    = 0.88; // amortiguación de velocidad
 const SERPENT_SPEED      = 2.1;  // velocidad de la cabeza (mitad)
@@ -219,7 +222,7 @@ const ENEMY_DAMAGE = {
 const SHIELD_MAX_MS    = 3000;
 const SHIELD_COOLDOWN  = 20000;   // recarga lenta
 const SHIELD_MIN_TO_USE = 200;    // ms mínimos de carga para poder activar
-const SHIELD_RADIUS    = 36;
+let SHIELD_RADIUS    = 36;
 const SHIELD_DAMAGE    = 9;
 const SHIELD_HIT_CD    = 600;
 
@@ -231,7 +234,7 @@ const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4 };
 
 // --- BALAS enemigas ---
 const ENEMY_BULLET_COLOR  = 0xff3333;
-const ENEMY_BULLET_SIZE   = 7;
+let ENEMY_BULLET_SIZE   = 7;
 const ENEMY_BULLET_MASS   = 0.3;
 const ENEMY_BULLET_TRAVEL = 9999;  // balas enemigas no se desvanecen
 
@@ -241,8 +244,8 @@ const FRAG_COUNT_MIN   = 24;   // partículas mínimas por impacto
 const FRAG_COUNT_MAX   = 44;   // partículas máximas
 const FRAG_SPEED_MIN   = 3.0;
 const FRAG_SPEED_MAX   = 11.0;
-const FRAG_SIZE_MIN    = 3.0;
-const FRAG_SIZE_MAX    = 9.0;
+let FRAG_SIZE_MIN    = 3.0;
+let FRAG_SIZE_MAX    = 9.0;
 
 // --- EXHAUST ---
 const EXHAUST_DURATION = 420;
@@ -275,18 +278,18 @@ const MISSILE_DAMAGE      = 8;
 const MISSILE_SPEED       = 4;
 const MISSILE_TURN_RATE   = 0.07;   // giro máximo por frame
 const MISSILE_LOOP_FRAMES = 80;     // frames que dura la espiral inicial
-const MISSILE_SIZE        = 8;
+let MISSILE_SIZE        = 8;
 const MISSILE_COLOR       = 0xff8833;
 
 // --- PAREDES INTERIORES ---
-const WALL_COUNT_MIN  = 7;
-const WALL_COUNT_MAX  = 11;
-const WALL_MIN_SHORT  = 12;
-const WALL_MAX_SHORT  = 20;
-const WALL_MIN_LONG   = 45;
-const WALL_MAX_LONG   = 130;
-const WALL_MARGIN     = 60;
-const WALL_MIN_SEP    = 55;
+let WALL_COUNT_MIN  = 7;
+let WALL_COUNT_MAX  = 11;
+let WALL_MIN_SHORT  = 12;
+let WALL_MAX_SHORT  = 20;
+let WALL_MIN_LONG   = 45;
+let WALL_MAX_LONG   = 130;
+let WALL_MARGIN     = 60;
+let WALL_MIN_SEP    = 55;
 
 // --- REJILLA DE FONDO (warp grid) ---
 const GRID_STEP       = 48;         // píxeles entre líneas de la malla
@@ -336,6 +339,61 @@ const app = new PIXI.Application({
   autoDensity: true,
 });
 document.body.appendChild(app.view);
+
+// ================================================================
+// MOBILE SCALE — reduce sizes on touch devices for more play space
+// ================================================================
+let MS = 1;  // mobile scale factor (1 = desktop, <1 = mobile)
+let isMobileControlsActive = false;
+const _isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+if (_isTouchDevice) {
+  MS = 0.5;
+  isMobileControlsActive = true;
+
+  // Scale enemy sizes (arrays inside const object are mutable)
+  for (const k in ENEMY_SIZE) {
+    ENEMY_SIZE[k][0] = Math.round(ENEMY_SIZE[k][0] * MS);
+    ENEMY_SIZE[k][1] = Math.round(ENEMY_SIZE[k][1] * MS);
+  }
+  // Scale bullet sizes
+  for (const k in BULLET_SIZE) BULLET_SIZE[k] = Math.round(BULLET_SIZE[k] * MS);
+
+  // Scale remaining let-constants
+  BLACKHOLE_SIZE   = Math.round(BLACKHOLE_SIZE * MS);
+  SERPENT_RADIUS   = Math.round(SERPENT_RADIUS * MS);
+  SERPENT_REST_LEN = Math.round(SERPENT_REST_LEN * MS);
+  ENEMY_BULLET_SIZE = Math.round(ENEMY_BULLET_SIZE * MS);
+  MISSILE_SIZE     = Math.round(MISSILE_SIZE * MS);
+  SHIELD_RADIUS    = Math.round(SHIELD_RADIUS * MS);
+  FRAG_SIZE_MIN   *= MS;
+  FRAG_SIZE_MAX   *= MS;
+
+  // Scale wall constants
+  WALL_MIN_SHORT  = Math.round(WALL_MIN_SHORT * MS);
+  WALL_MAX_SHORT  = Math.round(WALL_MAX_SHORT * MS);
+  WALL_MIN_LONG   = Math.round(WALL_MIN_LONG * MS);
+  WALL_MAX_LONG   = Math.round(WALL_MAX_LONG * MS);
+  WALL_MARGIN     = Math.round(WALL_MARGIN * MS);
+  WALL_MIN_SEP    = Math.round(WALL_MIN_SEP * MS);
+  // Fewer walls on mobile
+  WALL_COUNT_MIN  = Math.max(3, Math.round(WALL_COUNT_MIN * 0.6));
+  WALL_COUNT_MAX  = Math.max(5, Math.round(WALL_COUNT_MAX * 0.6));
+
+  // Request fullscreen on first user interaction
+  function tryFullscreen() {
+    const el = document.documentElement;
+    const rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+    if (rfs) {
+      rfs.call(el).catch(() => {});
+      // Also try to lock orientation to landscape
+      if (screen.orientation && screen.orientation.lock) {
+        screen.orientation.lock('landscape').catch(() => {});
+      }
+    }
+    document.removeEventListener('touchstart', tryFullscreen);
+  }
+  document.addEventListener('touchstart', tryFullscreen, { once: true });
+}
 
 // ================================================================
 // ENTITY
@@ -538,7 +596,8 @@ function spawnEnemy(variant, x, y) {
 }
 
 function spawnPlayer() {
-  return addToPool(makeEntity(TYPE.PLAYER,"player",W()*0.75,H()*0.5,20,20,0,0,2,COLOR.player));
+  const ps = Math.round(20 * MS);
+  return addToPool(makeEntity(TYPE.PLAYER,"player",W()*0.75,H()*0.5,ps,ps,0,0,2,COLOR.player));
 }
 
 function spawnBullet(x, y, vx, vy, btype, isEnemyBullet) {
@@ -2185,7 +2244,6 @@ function physicsStep(dt, now) {
 // ================================================================
 const keys  = {};
 const mouse = { x:0, y:0, down:false };
-let isMobileControlsActive = false;
 let player = null, lastShot = 0, currentWeapon = "normal";
 let autoBeamOn = false;        // arma 4: toggle
 let autoBeamTarget = null;     // entidad objetivo actual
@@ -2476,7 +2534,7 @@ function setup() {
   if (!app.stage.children.includes(playerBarsGfx)) app.stage.addChild(playerBarsGfx);
   if (!app.stage.children.includes(shieldGfx))     app.stage.addChild(shieldGfx);
   if (!app.stage.children.includes(autoBeamGfx))   app.stage.addChild(autoBeamGfx);
-  const sw=W(), sh=H(), WS=14;
+  const sw=W(), sh=H(), WS=Math.round(14 * MS);
   // Paredes perimetrales
   spawnWall(sw/2,    WS/2,    sw, WS);
   spawnWall(sw/2,    sh-WS/2, sw, WS);
@@ -3023,11 +3081,9 @@ showOverlay(false);
 // MOBILE TOUCH CONTROLS (nipplejs)
 // ================================================================
 (function initMobileControls() {
-  const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-  if (!isTouchDevice) return;
-  isMobileControlsActive = true;
+  if (!isMobileControlsActive) return;
 
-  // Prevent all default touch behavior on the canvas to avoid scroll/zoom
+  // Prevent all default touch behavior on the canvas
   const pixiCanvas = app.view;
   pixiCanvas.style.touchAction = 'none';
   document.body.style.touchAction = 'none';
@@ -3038,63 +3094,35 @@ showOverlay(false);
   zoneLeft.style.display  = 'block';
   zoneRight.style.display = 'block';
 
-  // Adjust HUD for mobile: move score and mass so they don't overlap joystick zones
+  // Adjust HUD for mobile
   const scoreHud = document.getElementById('scoreHud');
-  if (scoreHud) { scoreHud.style.bottom = 'auto'; scoreHud.style.top = '8px'; scoreHud.style.fontSize = '40px'; }
+  if (scoreHud) { scoreHud.style.bottom = 'auto'; scoreHud.style.top = '8px'; scoreHud.style.fontSize = '36px'; }
   const massHud = document.getElementById('massHud');
-  if (massHud) { massHud.style.bottom = 'auto'; massHud.style.top = '60px'; massHud.style.fontSize = '18px'; }
+  if (massHud) { massHud.style.bottom = 'auto'; massHud.style.top = '50px'; massHud.style.fontSize = '16px'; }
+  const phaseTimer = document.getElementById('phaseTimer');
+  if (phaseTimer) { phaseTimer.style.fontSize = '48px'; }
+  const phaseLabel = document.getElementById('phaseLabel');
+  if (phaseLabel) { phaseLabel.style.top = '58px'; }
 
-  // Hide the keyboard-hint from click-hint on mobile
+  // Mobile-friendly overlay hint
   const clickHint = document.querySelector('#overlay .click-hint');
   if (clickHint) clickHint.textContent = 'TOCA para comenzar';
 
-  // ---- LEFT JOYSTICK: AIM + FIRE ----
+  // ---- LEFT JOYSTICK: MOVEMENT (pulgar izquierdo) ----
   const joyLeft = nipplejs.create({
     zone: zoneLeft,
     mode: 'dynamic',
     position: { left: '50%', top: '50%' },
-    color: 'rgba(255, 255, 100, 0.35)',
-    size: 120,
-    threshold: 0.05,
-    fadeTime: 150,
-    multitouch: true,
-    maxNumberOfNipples: 1,
-    dataOnly: false,
-    restOpacity: 0.3,
-  });
-
-  joyLeft.on('move', function(evt, data) {
-    if (!player || !player.alive || gameOver || paused) return;
-    // data.vector: { x: -1..1, y: -1..1 } where y+ = up (math coords)
-    const vx = data.vector.x;
-    const vy = -data.vector.y; // flip for screen coords (y+ = down)
-    // Set mouse position far from player in the joystick direction
-    mouse.x = player.x + vx * 400;
-    mouse.y = player.y + vy * 400;
-    // Auto-fire while aiming
-    mouse.down = true;
-  });
-
-  joyLeft.on('end', function() {
-    mouse.down = false;
-  });
-
-  // ---- RIGHT JOYSTICK: MOVEMENT ----
-  const joyRight = nipplejs.create({
-    zone: zoneRight,
-    mode: 'dynamic',
-    position: { left: '50%', top: '50%' },
     color: 'rgba(0, 255, 200, 0.35)',
-    size: 120,
+    size: 110,
     threshold: 0.05,
     fadeTime: 150,
     multitouch: true,
     maxNumberOfNipples: 1,
     dataOnly: false,
-    restOpacity: 0.3,
+    restOpacity: 0.25,
   });
 
-  // Track which keys are being simulated by the right joystick
   let touchKeys = { KeyW: false, KeyA: false, KeyS: false, KeyD: false };
 
   function clearTouchKeys() {
@@ -3103,29 +3131,56 @@ showOverlay(false);
     }
   }
 
-  joyRight.on('move', function(evt, data) {
+  joyLeft.on('move', function(evt, data) {
     if (!player || !player.alive || gameOver || paused) return;
     const vx = data.vector.x;
     const vy = data.vector.y; // nipplejs: y+ = up (math)
     const deadzone = 0.25;
 
-    // Clear previous touch keys before setting new ones
     clearTouchKeys();
 
     if (vx > deadzone)  { keys.KeyD = true; touchKeys.KeyD = true; }
     if (vx < -deadzone) { keys.KeyA = true; touchKeys.KeyA = true; }
-    if (vy > deadzone)  { keys.KeyW = true; touchKeys.KeyW = true; }  // y+ = up = KeyW
-    if (vy < -deadzone) { keys.KeyS = true; touchKeys.KeyS = true; }  // y- = down = KeyS
+    if (vy > deadzone)  { keys.KeyW = true; touchKeys.KeyW = true; }
+    if (vy < -deadzone) { keys.KeyS = true; touchKeys.KeyS = true; }
+  });
+
+  joyLeft.on('end', function() {
+    clearTouchKeys();
+  });
+
+  // ---- RIGHT JOYSTICK: AIM + FIRE (pulgar derecho) ----
+  const joyRight = nipplejs.create({
+    zone: zoneRight,
+    mode: 'dynamic',
+    position: { left: '50%', top: '50%' },
+    color: 'rgba(255, 255, 100, 0.35)',
+    size: 110,
+    threshold: 0.05,
+    fadeTime: 150,
+    multitouch: true,
+    maxNumberOfNipples: 1,
+    dataOnly: false,
+    restOpacity: 0.25,
+  });
+
+  joyRight.on('move', function(evt, data) {
+    if (!player || !player.alive || gameOver || paused) return;
+    const vx = data.vector.x;
+    const vy = -data.vector.y; // flip for screen coords (y+ = down)
+    mouse.x = player.x + vx * 400;
+    mouse.y = player.y + vy * 400;
+    mouse.down = true;
   });
 
   joyRight.on('end', function() {
-    clearTouchKeys();
+    mouse.down = false;
   });
 
   // Prevent context menu on long press
   document.addEventListener('contextmenu', function(e) { e.preventDefault(); }, { passive: false });
 
-  // Prevent pinch-zoom and double-tap zoom on mobile
+  // Prevent pinch-zoom
   document.addEventListener('touchmove', function(e) {
     if (e.touches.length > 1) e.preventDefault();
   }, { passive: false });
@@ -3137,6 +3192,9 @@ showOverlay(false);
     if (now - lastTapTime < 300) e.preventDefault();
     lastTapTime = now;
   }, { passive: false });
+
+  // Re-request fullscreen after game over (when user taps overlay to restart)
+  const origStartGame = window.startGame || startGame;
 
 })();
 </script>
