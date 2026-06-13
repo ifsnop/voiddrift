@@ -344,11 +344,14 @@ document.body.appendChild(app.view);
 // MOBILE SCALE — reduce sizes on touch devices for more play space
 // ================================================================
 let MS = 1;  // mobile scale factor (1 = desktop, <1 = mobile)
+let GAME_SPEED = 1;  // game time multiplier (1 = normal, <1 = slower)
 let isMobileControlsActive = false;
 const _isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 if (_isTouchDevice) {
   MS = 0.5;
+  GAME_SPEED = 0.8;  // 1/5 más lento
   isMobileControlsActive = true;
+  app.ticker.speed = GAME_SPEED;  // scales app.ticker.deltaMS everywhere
 
   // Scale enemy sizes (arrays inside const object are mutable)
   for (const k in ENEMY_SIZE) {
@@ -591,7 +594,7 @@ function spawnEnemy(variant, x, y) {
   ));
   // Spawn burst effect
   spawnBirthEffect(sx, sy, col, Math.max(ew, eh));
-  if (variant === 'enemy_spawner') e._spawnTime = performance.now();
+  if (variant === 'enemy_spawner') e._spawnTime = gameTime;
   return e;
 }
 
@@ -2262,8 +2265,8 @@ window.addEventListener("keydown", e => {
   if (e.code==="Digit2") { if (currentWeapon==="heavy")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="heavy";  weaponSpread=0; } return; }
   if (e.code==="Digit3") { if (currentWeapon==="laser")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="laser";  weaponSpread=0; } return; }
   if (e.code==="Digit4") { autoBeamOn = !autoBeamOn; autoBeamTarget = null; return; }
-  if (e.code==="Digit6") { startPhase(6, performance.now()); return; }
-  if (e.code==="Digit7") { startPhase(7, performance.now()); return; }
+  if (e.code==="Digit6") { startPhase(6, gameTime); return; }
+  if (e.code==="Digit7") { startPhase(7, gameTime); return; }
   if (e.code==="KeyZ") { spawnEnemy("enemy_basic");   return; }
   if (e.code==="KeyX") { spawnEnemy("enemy_heavy");   return; }
   if (e.code==="KeyC") { spawnEnemy("enemy_boss");    return; }
@@ -2868,11 +2871,15 @@ function clearIntroEnemies() {
 // GAME LOOP
 // ================================================================
 let prevTime = null;
+let gameTime = 0;  // virtual game clock (advances at GAME_SPEED rate)
 app.ticker.add(() => {
-  const now = performance.now();
-  if (prevTime===null) { prevTime=now; return; }
-  const dt = Math.min((now-prevTime)/16.6667, 3);
-  prevTime = now;
+  const realNow = performance.now();
+  if (prevTime===null) { prevTime=realNow; gameTime=realNow; return; }
+  const realDelta = realNow - prevTime;
+  prevTime = realNow;
+  gameTime += realDelta * GAME_SPEED;
+  const now = gameTime;
+  const dt = Math.min((realDelta * GAME_SPEED)/16.6667, 3);
 
   if (!gameStarted) {
     updateIntroAnimation(now);
