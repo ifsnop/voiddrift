@@ -6,7 +6,6 @@
   <title>Game Engine - Fases</title>
   <style>
     body { margin: 0; overflow: hidden; background: #111; position: fixed; inset: 0; width: 100%; height: 100%; }
-    /* Fullscreen: hide browser chrome on mobile */
     html { overflow: hidden; height: 100%; }
     canvas { display: block; touch-action: none; }
     #hud {
@@ -66,15 +65,9 @@
     position: fixed; inset: 0; z-index: 90;
     pointer-events: none; display: none;
   }
-  /* Mobile joystick zones */
   .joystick-zone {
-    position: fixed;
-    bottom: 0;
-    width: 50%;
-    height: 55%;
-    z-index: 15;
-    display: none;
-    touch-action: none;
+    position: fixed; bottom: 0; width: 50%; height: 55%;
+    z-index: 15; display: none; touch-action: none;
   }
   #zone-left { left: 0; }
   #zone-right { right: 0; }
@@ -168,15 +161,15 @@ const SPAWNER_PULSE_COUNT       = 3;     // ondas concéntricas por evento
 // --- FOLLOWER ---
 const FOLLOWER_IMPULSE_INTERVAL_MS = 5000;
 const FOLLOWER_BRAKE_FACTOR        = 0.08;  // conserva poco de vel anterior
-const FOLLOWER_IMPULSE_SPEED       = 9;
+let FOLLOWER_IMPULSE_SPEED       = 9;
 
 // --- HITTER ---
 const HITTER_SHOOT_INTERVAL_MS  = 2500;
-const HITTER_BULLET_SPEED       = 5;
+let HITTER_BULLET_SPEED       = 5;
 const HITTER_BULLET_DAMAGE      = 2;
 
 // --- BLACKHOLE ---
-const BLACKHOLE_BASE_RADIUS     = 520;   // radio ampliado
+let BLACKHOLE_BASE_RADIUS     = 520;   // radio ampliado
 const BLACKHOLE_RADIUS_PER_MASS = 3.0;   // px extra de radio por masa absorbida
 const BLACKHOLE_BASE_FORCE      = 2;     // fuerza a la mitad
 const BLACKHOLE_FORCE_PER_MASS  = 0.04;  // crecimiento de fuerza muy lento
@@ -191,7 +184,7 @@ let SERPENT_RADIUS     = 10;    // radio de cada segmento
 let SERPENT_REST_LEN   = 48;   // separación entre segmentos (aumentada)
 const SERPENT_SPRING_K   = 0.22; // rigidez del muelle
 const SERPENT_DAMPING    = 0.88; // amortiguación de velocidad
-const SERPENT_SPEED      = 2.1;  // velocidad de la cabeza (mitad)
+let SERPENT_SPEED      = 2.1;  // velocidad de la cabeza (mitad)
 const SERPENT_ENERGY     = 8;    // vida por segmento
 const SERPENT_COLOR      = 0x22ffaa;
 const SERPENT_CORE_COLOR = 0x004422;
@@ -228,9 +221,9 @@ const SHIELD_HIT_CD    = 600;
 
 // --- BALAS del jugador ---
 const BULLET_DAMAGE = { normal:1, heavy:3, laser:6 };
-const BULLET_SPEED  = { normal:10, heavy:7, laser:18 };
+let BULLET_SPEED  = { normal:10, heavy:7, laser:18 };
 const BULLET_MASS   = { normal:0.3, heavy:1.5, laser:0.05 };
-const BULLET_SIZE   = { normal:6,   heavy:12,  laser:4 };
+let BULLET_SIZE   = { normal:6,   heavy:12,  laser:4 };
 
 // --- BALAS enemigas ---
 const ENEMY_BULLET_COLOR  = 0xff3333;
@@ -260,14 +253,14 @@ const SLEEP_THRESH  = 0.003;
 const SLEEP_FRAMES  = 20;
 
 // --- JUGADOR ---
-const PLAYER_SPEED   = 4;
-const PLAYER_ACCEL   = 0.025;
+let PLAYER_SPEED   = 4;
+let PLAYER_ACCEL   = 0.025;
 const PLAYER_DAMPING = 0.965;
-const BULLET_CD_MS   = 220;
+let BULLET_CD_MS   = 220;
 const HIT_CD_MS      = 1200;
 
 // --- AUTO-BEAM (arma 4) ---
-const AUTOBEAM_RADIUS     = 80;     // radio de búsqueda de objetivo (px)
+let AUTOBEAM_RADIUS     = 80;     // radio de búsqueda de objetivo (px)
 const AUTOBEAM_DAMAGE     = 1.5;    // daño por tick (1/4 del laser)
 const AUTOBEAM_TICK_MS    = 120;    // ms entre ticks de daño
 const AUTOBEAM_MIN_SHOW   = 250;    // ms mínimos de rayo visible tras matar
@@ -275,7 +268,7 @@ const AUTOBEAM_MIN_SHOW   = 250;    // ms mínimos de rayo visible tras matar
 // --- MISIL / LOCK-ON ---
 const LOCK_MAX            = 5;      // máximo de objetivos simultáneos
 const MISSILE_DAMAGE      = 8;
-const MISSILE_SPEED       = 4;
+let MISSILE_SPEED       = 4;
 const MISSILE_TURN_RATE   = 0.07;   // giro máximo por frame
 const MISSILE_LOOP_FRAMES = 80;     // frames que dura la espiral inicial
 let MISSILE_SIZE        = 8;
@@ -341,61 +334,98 @@ const app = new PIXI.Application({
 document.body.appendChild(app.view);
 
 // ================================================================
-// MOBILE SCALE — reduce sizes on touch devices for more play space
+// MOBILE DETECTION, WORLD SCALING, CAMERA
 // ================================================================
-let MS = 1;  // mobile scale factor (1 = desktop, <1 = mobile)
-let GAME_SPEED = 1;  // game time multiplier (1 = normal, <1 = slower)
+let MS = 1;   // mobile size scale
 let isMobileControlsActive = false;
+let WORLD_W = 0, WORLD_H = 0;   // set after detection
+const cam = { x: 0, y: 0 };     // camera top-left in world coords
+
 const _isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 if (_isTouchDevice) {
   MS = 0.5;
-  GAME_SPEED = 0.8;  // 1/5 más lento
   isMobileControlsActive = true;
-  app.ticker.speed = GAME_SPEED;  // scales app.ticker.deltaMS everywhere
+  WORLD_W = 5000; WORLD_H = 5000;
 
-  // Scale enemy sizes (arrays inside const object are mutable)
+  // --- Speed reduction (1/5 slower = 0.8×) ---
+  const SPD = 0.8;
+  PLAYER_SPEED   *= SPD;
+  PLAYER_ACCEL   *= SPD;
+  FOLLOWER_IMPULSE_SPEED *= SPD;
+  HITTER_BULLET_SPEED    *= SPD;
+  SERPENT_SPEED           *= SPD;
+  MISSILE_SPEED           *= SPD;
+  for (const k in BULLET_SPEED) BULLET_SPEED[k] *= SPD;
+
+  // --- Size reduction ---
   for (const k in ENEMY_SIZE) {
     ENEMY_SIZE[k][0] = Math.round(ENEMY_SIZE[k][0] * MS);
     ENEMY_SIZE[k][1] = Math.round(ENEMY_SIZE[k][1] * MS);
   }
-  // Scale bullet sizes
   for (const k in BULLET_SIZE) BULLET_SIZE[k] = Math.round(BULLET_SIZE[k] * MS);
-
-  // Scale remaining let-constants
-  BLACKHOLE_SIZE   = Math.round(BLACKHOLE_SIZE * MS);
-  SERPENT_RADIUS   = Math.round(SERPENT_RADIUS * MS);
-  SERPENT_REST_LEN = Math.round(SERPENT_REST_LEN * MS);
+  BLACKHOLE_SIZE    = Math.round(BLACKHOLE_SIZE * MS);
+  SERPENT_RADIUS    = Math.round(SERPENT_RADIUS * MS);
+  SERPENT_REST_LEN  = Math.round(SERPENT_REST_LEN * MS);
   ENEMY_BULLET_SIZE = Math.round(ENEMY_BULLET_SIZE * MS);
-  MISSILE_SIZE     = Math.round(MISSILE_SIZE * MS);
-  SHIELD_RADIUS    = Math.round(SHIELD_RADIUS * MS);
-  FRAG_SIZE_MIN   *= MS;
-  FRAG_SIZE_MAX   *= MS;
+  MISSILE_SIZE      = Math.round(MISSILE_SIZE * MS);
+  SHIELD_RADIUS     = Math.round(SHIELD_RADIUS * MS);
+  FRAG_SIZE_MIN    *= MS;
+  FRAG_SIZE_MAX    *= MS;
+  BLACKHOLE_BASE_RADIUS *= MS;
+  AUTOBEAM_RADIUS  = Math.round(AUTOBEAM_RADIUS * MS);
 
-  // Scale wall constants
-  WALL_MIN_SHORT  = Math.round(WALL_MIN_SHORT * MS);
-  WALL_MAX_SHORT  = Math.round(WALL_MAX_SHORT * MS);
-  WALL_MIN_LONG   = Math.round(WALL_MIN_LONG * MS);
-  WALL_MAX_LONG   = Math.round(WALL_MAX_LONG * MS);
-  WALL_MARGIN     = Math.round(WALL_MARGIN * MS);
-  WALL_MIN_SEP    = Math.round(WALL_MIN_SEP * MS);
-  // Fewer walls on mobile
-  WALL_COUNT_MIN  = Math.max(3, Math.round(WALL_COUNT_MIN * 0.6));
-  WALL_COUNT_MAX  = Math.max(5, Math.round(WALL_COUNT_MAX * 0.6));
+  // --- Wall scaling ---
+  WALL_MIN_SHORT = Math.round(WALL_MIN_SHORT * MS);
+  WALL_MAX_SHORT = Math.round(WALL_MAX_SHORT * MS);
+  WALL_MIN_LONG  = Math.round(WALL_MIN_LONG * MS);
+  WALL_MAX_LONG  = Math.round(WALL_MAX_LONG * MS);
+  WALL_MARGIN    = Math.round(WALL_MARGIN * 2);  // more margin in big world
+  WALL_MIN_SEP   = Math.round(WALL_MIN_SEP * MS);
+  WALL_COUNT_MIN = 20;   // more walls in 5000×5000
+  WALL_COUNT_MAX = 35;
 
-  // Request fullscreen on first user interaction
-  function tryFullscreen() {
+  // Fullscreen on first touch
+  document.addEventListener('touchstart', function fs() {
     const el = document.documentElement;
     const rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
-    if (rfs) {
-      rfs.call(el).catch(() => {});
-      // Also try to lock orientation to landscape
-      if (screen.orientation && screen.orientation.lock) {
-        screen.orientation.lock('landscape').catch(() => {});
-      }
-    }
-    document.removeEventListener('touchstart', tryFullscreen);
-  }
-  document.addEventListener('touchstart', tryFullscreen, { once: true });
+    if (rfs) rfs.call(el).catch(() => {});
+    if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {});
+    document.removeEventListener('touchstart', fs);
+  }, { once: true });
+} else {
+  // Desktop: world = screen
+  WORLD_W = 0; WORLD_H = 0; // sentinel: use screen size
+}
+
+// World-container: all game objects live here; camera moves this container
+const worldContainer = new PIXI.Container();
+app.stage.addChild(worldContainer);
+
+// World dimensions (called often)
+function WW() { return WORLD_W || app.screen.width; }
+function WH() { return WORLD_H || app.screen.height; }
+
+// Camera update — dead-zone style with edge push
+function updateCamera() {
+  if (!_isTouchDevice || !player || !player.alive) return;
+  const sw = app.screen.width, sh = app.screen.height;
+  const mx = sw * 0.10, my = sh * 0.10; // 10% edge margin
+
+  // Player screen position
+  const psx = player.x - cam.x;
+  const psy = player.y - cam.y;
+
+  if (psx < mx)       cam.x = player.x - mx;
+  if (psx > sw - mx)  cam.x = player.x - (sw - mx);
+  if (psy < my)       cam.y = player.y - my;
+  if (psy > sh - my)  cam.y = player.y - (sh - my);
+
+  // Clamp to world bounds
+  cam.x = Math.max(0, Math.min(cam.x, WW() - sw));
+  cam.y = Math.max(0, Math.min(cam.y, WH() - sh));
+
+  worldContainer.x = -cam.x;
+  worldContainer.y = -cam.y;
 }
 
 // ================================================================
@@ -540,7 +570,7 @@ function addToPool(e) {
   }
   g.pivot.x = e.halfW; g.pivot.y = e.halfH;
   g.x = e.x; g.y = e.y;
-  app.stage.addChild(g);
+  worldContainer.addChild(g);
   e.gfx = g;
   pool.push(e);
   return e;
@@ -550,8 +580,8 @@ function purge() {
   for (let i = pool.length - 1; i >= 0; i--) {
     const e = pool[i];
     if (!e.alive) {
-      if (e.gfx) { app.stage.removeChild(e.gfx); e.gfx.destroy(); e.gfx = null; }
-      if (e._ringGfx) { app.stage.removeChild(e._ringGfx); e._ringGfx.destroy(); e._ringGfx = null; }
+      if (e.gfx) { worldContainer.removeChild(e.gfx); e.gfx.destroy(); e.gfx = null; }
+      if (e._ringGfx) { worldContainer.removeChild(e._ringGfx); e._ringGfx.destroy(); e._ringGfx = null; }
       pool.splice(i, 1);
     }
   }
@@ -579,8 +609,8 @@ function spawnEnemy(variant, x, y) {
     const margin = 40, safeR = 120;
     let attempts = 0;
     do {
-      sx = margin + Math.random() * (W() - margin * 2);
-      sy = margin + Math.random() * (H() - margin * 2);
+      sx = margin + Math.random() * (WW() - margin * 2);
+      sy = margin + Math.random() * (WH() - margin * 2);
       attempts++;
       if (attempts > 30) break;  // fallback: acepta cualquier posición
     } while (player && player.alive &&
@@ -594,13 +624,13 @@ function spawnEnemy(variant, x, y) {
   ));
   // Spawn burst effect
   spawnBirthEffect(sx, sy, col, Math.max(ew, eh));
-  if (variant === 'enemy_spawner') e._spawnTime = gameTime;
+  if (variant === 'enemy_spawner') e._spawnTime = performance.now();
   return e;
 }
 
 function spawnPlayer() {
   const ps = Math.round(20 * MS);
-  return addToPool(makeEntity(TYPE.PLAYER,"player",W()*0.75,H()*0.5,ps,ps,0,0,2,COLOR.player));
+  return addToPool(makeEntity(TYPE.PLAYER,"player",WW()*0.5,WH()*0.5,ps,ps,0,0,2,COLOR.player));
 }
 
 function spawnBullet(x, y, vx, vy, btype, isEnemyBullet) {
@@ -615,7 +645,7 @@ function spawnBullet(x, y, vx, vy, btype, isEnemyBullet) {
     mass       = BULLET_MASS[btype] ?? 0.3;
     bs         = BULLET_SIZE[btype] ?? 6;
     baseDamage = BULLET_DAMAGE[btype] ?? 1;
-    maxTravel  = W() * BULLET_MAX_TRAVEL_FRAC;
+    maxTravel  = WW() * BULLET_MAX_TRAVEL_FRAC;
   }
   const e = makeEntity(TYPE.BULLET,"bullet_"+btype,x,y,bs,bs,vx,vy,mass,col);
   e.isEnemyBullet = !!isEnemyBullet;
@@ -682,7 +712,7 @@ function spawnSpawnerPulse(x, y) {
     const delay = wave * 90;  // cada onda desfasada 90ms
     setTimeout(() => {
       const g = new PIXI.Graphics();
-      app.stage.addChild(g);
+      worldContainer.addChild(g);
       pulses.push({
         gfx: g, x, y,
         life: SPAWNER_PULSE_DURATION,
@@ -700,7 +730,7 @@ function updatePulses() {
     const p = pulses[i];
     p.life -= app.ticker.deltaMS;
     if (p.life <= 0) {
-      app.stage.removeChild(p.gfx); p.gfx.destroy();
+      worldContainer.removeChild(p.gfx); p.gfx.destroy();
       pulses.splice(i, 1); continue;
     }
     const t = 1 - p.life / p.maxLife;  // 0→1 con el tiempo
@@ -721,7 +751,7 @@ const impulseFlashes = [];
 function spawnImpulseFlash(x, y) {
   // Varias líneas radiales + círculo expansivo
   const g = new PIXI.Graphics();
-  app.stage.addChild(g);
+  worldContainer.addChild(g);
   impulseFlashes.push({ gfx:g, x, y, life:380, maxLife:380 });
 }
 
@@ -730,7 +760,7 @@ function updateImpulseFlashes() {
     const f = impulseFlashes[i];
     f.life -= app.ticker.deltaMS;
     if (f.life <= 0) {
-      app.stage.removeChild(f.gfx); f.gfx.destroy();
+      worldContainer.removeChild(f.gfx); f.gfx.destroy();
       impulseFlashes.splice(i, 1); continue;
     }
     const t = f.life / f.maxLife;   // 1→0
@@ -867,7 +897,7 @@ function phase7Update(now) {
     const limit = type === 0 ? PHASE7_SPAWNER_COUNT : PHASE7_HITTERS_PER_WAVE;
 
     if (phase7Count < limit) {
-      const sw = W(), sh = H();
+      const sw = WW(), sh = WH();
       if (type === 0) {
         // SPAWNERS — distribuidos entre las 4 esquinas
         const corner = phase7Count % 4;
@@ -902,7 +932,7 @@ function phase7Update(now) {
     if (!s_bhMissingFrom) s_bhMissingFrom = now;
     if (now - s_bhMissingFrom >= PHASE7_BH_TIMEOUT_MS) {
       s_bhMissingFrom = null;
-      const sw = W(), sh = H();
+      const sw = WW(), sh = WH();
       const side = Math.floor(Math.random()*4);
       let bx, by;
       if (side === 0)      { bx = Math.random()*sw; by = -30; }
@@ -921,7 +951,7 @@ function phase7Update(now) {
     const liveSerpents = serpents.filter(s => s.segs.length > 0).length;
     if (liveSerpents < PHASE7_SERPENT_MAX) {
       s_lastSerpentSpawn = now;
-      const sw = W(), sh = H();
+      const sw = WW(), sh = WH();
       spawnSerpent(Math.random() * sw, Math.random() * sh);
     } else {
       s_lastSerpentSpawn = now; // reset so we retry in 10 s
@@ -957,7 +987,7 @@ function buildSegmentGfx(segIndex) {
   g.drawCircle(r, r, r * 0.45);
   g.endFill();
   g.pivot.x = r; g.pivot.y = r;
-  app.stage.addChild(g);
+  worldContainer.addChild(g);
   return g;
 }
 
@@ -983,7 +1013,7 @@ function spawnSerpent(sx, sy) {
   }
 
   const lineGfx = new PIXI.Graphics();
-  app.stage.addChildAt(lineGfx, 0); // behind everything
+  worldContainer.addChildAt(lineGfx, 0); // behind everything
   serpents.push({ segs, lineGfx });
 }
 
@@ -996,7 +1026,7 @@ function updateSerpents(now) {
       const seg = s.segs[i];
       if (!seg.entity.alive) {
         if (seg.entity.gfx) {
-          app.stage.removeChild(seg.entity.gfx);
+          worldContainer.removeChild(seg.entity.gfx);
           seg.entity.gfx.destroy();
           seg.entity.gfx = null;
         }
@@ -1007,7 +1037,7 @@ function updateSerpents(now) {
 
     // If all segments gone, remove serpent
     if (s.segs.length === 0) {
-      app.stage.removeChild(s.lineGfx); s.lineGfx.destroy();
+      worldContainer.removeChild(s.lineGfx); s.lineGfx.destroy();
       serpents.splice(si, 1);
       continue;
     }
@@ -1070,7 +1100,7 @@ function updateSerpents(now) {
       e.y += seg.vy;
 
       // Bounce off screen edges
-      const sw = W(), sh = H(), r = SERPENT_RADIUS;
+      const sw = WW(), sh = WH(), r = SERPENT_RADIUS;
       if (e.x - r < 0)    { e.x = r;    seg.vx = Math.abs(seg.vx); }
       if (e.x + r > sw)   { e.x = sw-r; seg.vx = -Math.abs(seg.vx); }
       if (e.y - r < 0)    { e.y = r;    seg.vy = Math.abs(seg.vy); }
@@ -1156,8 +1186,8 @@ function enemyAI(now) {
         setTimeout(() => {
           const angle = Math.random() * Math.PI * 2;
           const dist  = 40 + Math.random() * 25;
-          const sx = Math.max(30, Math.min(W()-30, e.x + Math.cos(angle) * dist));
-          const sy = Math.max(30, Math.min(H()-30, e.y + Math.sin(angle) * dist));
+          const sx = Math.max(30, Math.min(WW()-30, e.x + Math.cos(angle) * dist));
+          const sy = Math.max(30, Math.min(WH()-30, e.y + Math.sin(angle) * dist));
           spawnEnemy(SPAWNER_SPAWN_VARIANT, sx, sy);
         }, 150);
       }
@@ -1259,9 +1289,9 @@ function enemyAI(now) {
       // Repulsión suave de bordes — evita que se atasque en esquinas
       const edgeMargin = 120;
       if (e.x < edgeMargin)        e.vx += (edgeMargin - e.x) * 0.003;
-      if (e.x > W() - edgeMargin)  e.vx -= (e.x - (W() - edgeMargin)) * 0.003;
+      if (e.x > WW() - edgeMargin)  e.vx -= (e.x - (WW() - edgeMargin)) * 0.003;
       if (e.y < edgeMargin)        e.vy += (edgeMargin - e.y) * 0.003;
-      if (e.y > H() - edgeMargin)  e.vy -= (e.y - (H() - edgeMargin)) * 0.003;
+      if (e.y > WH() - edgeMargin)  e.vy -= (e.y - (WH() - edgeMargin)) * 0.003;
       e.vx *= 0.992; e.vy *= 0.992;
       e.sleeping = false; e.sleepN = 0;
 
@@ -1273,7 +1303,7 @@ function enemyAI(now) {
       // Solo dibujamos el pequeño halo de núcleo en un gfx propio
       if (!e._ringGfx) {
         e._ringGfx = new PIXI.Graphics();
-        app.stage.addChild(e._ringGfx);
+        worldContainer.addChild(e._ringGfx);
       }
       e._ringGfx.clear();
       // Halo tenue — el efecto principal lo hace la malla deformada
@@ -1416,7 +1446,7 @@ function emitEnemyFx(e, now) {
   // Offset aleatorio desde el centro del sprite
   g.x = e.x + (Math.random()-0.5)*e.w*0.7;
   g.y = e.y + (Math.random()-0.5)*e.h*0.7;
-  app.stage.addChild(g);
+  worldContainer.addChild(g);
   enemyParticles.push({ gfx:g, vx, vy, life, maxLife:life });
 }
 
@@ -1425,7 +1455,7 @@ function updateEnemyParticles(dt) {
     const p = enemyParticles[i];
     p.life -= app.ticker.deltaMS;
     if (p.life <= 0) {
-      app.stage.removeChild(p.gfx); p.gfx.destroy();
+      worldContainer.removeChild(p.gfx); p.gfx.destroy();
       enemyParticles.splice(i,1); continue;
     }
     p.gfx.x += p.vx * dt;
@@ -1450,7 +1480,7 @@ function emitAllEnemyFx(now) {
 const birthEffects = [];
 function spawnBirthEffect(x, y, color, size) {
   const g = new PIXI.Graphics();
-  app.stage.addChild(g);
+  worldContainer.addChild(g);
   birthEffects.push({ gfx:g, x, y, color, size, life:400, maxLife:400 });
 }
 function updateBirthEffects() {
@@ -1458,7 +1488,7 @@ function updateBirthEffects() {
     const b = birthEffects[i];
     b.life -= app.ticker.deltaMS;
     if (b.life <= 0) {
-      app.stage.removeChild(b.gfx); b.gfx.destroy();
+      worldContainer.removeChild(b.gfx); b.gfx.destroy();
       birthEffects.splice(i, 1); continue;
     }
     const t = b.life / b.maxLife;   // 1→0
@@ -1562,14 +1592,14 @@ function emitMissileExhaust(m) {
   g.beginFill(col, 0.9); g.drawCircle(0,0,sz); g.endFill();
   g.x = m.x - Math.cos(m.angle)*MISSILE_SIZE*0.7 + (Math.random()-0.5)*4;
   g.y = m.y - Math.sin(m.angle)*MISSILE_SIZE*0.7 + (Math.random()-0.5)*4;
-  app.stage.addChild(g);
+  worldContainer.addChild(g);
   missileExhaust.push({ gfx:g, life:280, maxLife:280, vx:(Math.random()-0.5)*0.6, vy:(Math.random()-0.5)*0.6 });
 }
 function updateMissileExhaust(dt) {
   for (let i=missileExhaust.length-1; i>=0; i--) {
     const p=missileExhaust[i];
     p.life-=app.ticker.deltaMS;
-    if (p.life<=0) { app.stage.removeChild(p.gfx); p.gfx.destroy(); missileExhaust.splice(i,1); continue; }
+    if (p.life<=0) { worldContainer.removeChild(p.gfx); p.gfx.destroy(); missileExhaust.splice(i,1); continue; }
     p.gfx.x+=p.vx*dt; p.gfx.y+=p.vy*dt;
     const t=p.life/p.maxLife; p.gfx.alpha=t*t; p.gfx.scale.set(t*0.8+0.2);
   }
@@ -1591,7 +1621,7 @@ function fireMissile() {
   g.drawEllipse(MISSILE_SIZE*0.25, 0, MISSILE_SIZE*0.3, MISSILE_SIZE*0.18);
   g.endFill();
   g.x=player.x; g.y=player.y; g.rotation=startAngle;
-  app.stage.addChild(g);
+  worldContainer.addChild(g);
 
   missiles.push({
     alive:true, x:player.x, y:player.y,
@@ -1641,9 +1671,9 @@ function updateMissiles(dt, now) {
     if (m.gfx) { m.gfx.x=m.x; m.gfx.y=m.y; m.gfx.rotation=m.angle; }
 
     // Out of bounds
-    if (m.x<-60||m.x>W()+60||m.y<-60||m.y>H()+60) {
+    if (m.x<-60||m.x>WW()+60||m.y<-60||m.y>WH()+60) {
       removeLockFor(m.targetId);
-      if (m.gfx) { app.stage.removeChild(m.gfx); m.gfx.destroy(); m.gfx=null; }
+      if (m.gfx) { worldContainer.removeChild(m.gfx); m.gfx.destroy(); m.gfx=null; }
       missiles.splice(i,1); continue;
     }
 
@@ -1670,7 +1700,7 @@ function updateMissiles(dt, now) {
     }
     if (hit) {
       m.alive=false;
-      if (m.gfx){app.stage.removeChild(m.gfx);m.gfx.destroy();m.gfx=null;}
+      if (m.gfx){worldContainer.removeChild(m.gfx);m.gfx.destroy();m.gfx=null;}
       missiles.splice(i,1);
     }
   }
@@ -1698,7 +1728,7 @@ function spawnFragments(x, y, bvx, bvy, color, count) {
       g.beginFill(0xffffff, 0.8); g.drawCircle(0,0,sz*0.25); g.endFill();
     }
     g.x = x + (Math.random()-0.5)*6; g.y = y + (Math.random()-0.5)*6;
-    app.stage.addChild(g);
+    worldContainer.addChild(g);
     fragments.push({
       gfx: g,
       vx: Math.cos(angle)*spd + bvx*0.2,
@@ -1716,7 +1746,7 @@ function updateFragments(dt) {
     const f = fragments[i];
     f.life -= app.ticker.deltaMS;
     if (f.life <= 0) {
-      app.stage.removeChild(f.gfx); f.gfx.destroy();
+      worldContainer.removeChild(f.gfx); f.gfx.destroy();
       fragments.splice(i, 1); continue;
     }
     f.x += f.vx * dt; f.y += f.vy * dt;
@@ -1757,7 +1787,7 @@ function spawnExhaust(now) {
     else { g.beginFill(col); g.drawRect(-sz/2,-sz/2,sz,sz); g.endFill(); }
     g.x = player.x + ox + (Math.random()-0.5)*4;
     g.y = player.y + oy + (Math.random()-0.5)*4;
-    app.stage.addChild(g);
+    worldContainer.addChild(g);
     exhaust.push({ gfx:g, vx:evx, vy:evy, life:EXHAUST_DURATION, maxLife:EXHAUST_DURATION });
   }
 }
@@ -1767,7 +1797,7 @@ function updateExhaust(dt) {
     const f = exhaust[i];
     f.life -= app.ticker.deltaMS;
     if (f.life <= 0) {
-      app.stage.removeChild(f.gfx); f.gfx.destroy();
+      worldContainer.removeChild(f.gfx); f.gfx.destroy();
       exhaust.splice(i, 1); continue;
     }
     f.gfx.x += f.vx*dt; f.gfx.y += f.vy*dt;
@@ -1787,7 +1817,7 @@ function showEnergyBar(entity, now) {
   let bar = energyBars.get(entity.id);
   if (!bar) {
     const g = new PIXI.Graphics();
-    app.stage.addChild(g);
+    worldContainer.addChild(g);
     bar = { entity, gfx:g };
     energyBars.set(entity.id, bar);
   }
@@ -1798,7 +1828,7 @@ function updateEnergyBars(now) {
   for (const [id, bar] of energyBars) {
     const e = bar.entity;
     if (!e.alive || now >= bar.expireAt) {
-      app.stage.removeChild(bar.gfx); bar.gfx.destroy();
+      worldContainer.removeChild(bar.gfx); bar.gfx.destroy();
       energyBars.delete(id); continue;
     }
     const frac     = Math.max(0, e.energy / e.maxEnergy);
@@ -2109,7 +2139,7 @@ function applyImpulse(a, b, ox, oy) {
 // PHYSICS STEP
 // ================================================================
 function physicsStep(dt, now) {
-  const sw=W(), sh=H();
+  const sw=WW(), sh=WH();
   for (let i=0; i<pool.length; i++) {
     const e=pool[i];
     if (!e.alive||e.invMass===0||e.sleeping||e._skipPhysics) continue;
@@ -2265,8 +2295,8 @@ window.addEventListener("keydown", e => {
   if (e.code==="Digit2") { if (currentWeapon==="heavy")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="heavy";  weaponSpread=0; } return; }
   if (e.code==="Digit3") { if (currentWeapon==="laser")  { weaponSpread=(weaponSpread+1)%8; } else { currentWeapon="laser";  weaponSpread=0; } return; }
   if (e.code==="Digit4") { autoBeamOn = !autoBeamOn; autoBeamTarget = null; return; }
-  if (e.code==="Digit6") { startPhase(6, gameTime); return; }
-  if (e.code==="Digit7") { startPhase(7, gameTime); return; }
+  if (e.code==="Digit6") { startPhase(6, performance.now()); return; }
+  if (e.code==="Digit7") { startPhase(7, performance.now()); return; }
   if (e.code==="KeyZ") { spawnEnemy("enemy_basic");   return; }
   if (e.code==="KeyX") { spawnEnemy("enemy_heavy");   return; }
   if (e.code==="KeyC") { spawnEnemy("enemy_boss");    return; }
@@ -2274,14 +2304,14 @@ window.addEventListener("keydown", e => {
   if (e.code==="KeyB") { spawnEnemy("enemy_follower");return; }
   if (e.code==="KeyN") { spawnEnemy("enemy_hitter");  return; }
   if (e.code==="KeyM") { spawnEnemy("enemy_blackhole"); return; }
-  if (e.code==="Comma") { spawnSerpent(Math.random()*W(), Math.random()*H()); return; }
+  if (e.code==="Comma") { spawnSerpent(Math.random()*WW(), Math.random()*WH()); return; }
   if (e.code==="Space")  { keys["Space"]=true; return; }
   if (e.code==="KeyQ") { addLockTarget(); return; }
   if (e.code==="KeyE") { fireMissile(); return; }
   keys[e.code]=true; e.preventDefault();
 });
 window.addEventListener("keyup",     e => { keys[e.code]=false; });
-window.addEventListener("mousemove", e => { if(!isMobileControlsActive) { mouse.x=e.clientX; mouse.y=e.clientY; } });
+window.addEventListener("mousemove", e => { if(!isMobileControlsActive) { mouse.x=e.clientX+cam.x; mouse.y=e.clientY+cam.y; } });
 window.addEventListener("mousedown", e => { if(!isMobileControlsActive && e.button===0) mouse.down=true;  });
 window.addEventListener("mouseup",   e => { if(!isMobileControlsActive && e.button===0) mouse.down=false; });
 
@@ -2405,7 +2435,7 @@ function hudUpdate(now) {
 // GRÁFICOS
 // ================================================================
 const aimLine = new PIXI.Graphics();
-app.stage.addChild(aimLine);
+worldContainer.addChild(aimLine);
 
 function drawAimLine() {
   aimLine.clear();
@@ -2435,7 +2465,7 @@ function drawAimLine() {
 }
 
 const playerBarsGfx = new PIXI.Graphics();
-app.stage.addChild(playerBarsGfx);
+worldContainer.addChild(playerBarsGfx);
 
 function drawPlayerBars(now) {
   playerBarsGfx.clear();
@@ -2474,7 +2504,7 @@ function drawPlayerBars(now) {
 }
 
 const shieldGfx = new PIXI.Graphics();
-app.stage.addChild(shieldGfx);
+worldContainer.addChild(shieldGfx);
 
 function drawShield(now) {
   shieldGfx.clear();
@@ -2532,12 +2562,12 @@ function generateInteriorWalls(sw, sh) {
 
 function setup() {
   // Re-attach persistent gfx layers (safe to call multiple times)
-  if (!app.stage.children.includes(warpGridGfx))  app.stage.addChildAt(warpGridGfx, 0);
-  if (!app.stage.children.includes(aimLine))       app.stage.addChild(aimLine);
-  if (!app.stage.children.includes(playerBarsGfx)) app.stage.addChild(playerBarsGfx);
-  if (!app.stage.children.includes(shieldGfx))     app.stage.addChild(shieldGfx);
-  if (!app.stage.children.includes(autoBeamGfx))   app.stage.addChild(autoBeamGfx);
-  const sw=W(), sh=H(), WS=Math.round(14 * MS);
+  if (!worldContainer.children.includes(warpGridGfx))  worldContainer.addChildAt(warpGridGfx, 0);
+  if (!worldContainer.children.includes(aimLine))       worldContainer.addChild(aimLine);
+  if (!worldContainer.children.includes(playerBarsGfx)) worldContainer.addChild(playerBarsGfx);
+  if (!worldContainer.children.includes(shieldGfx))     worldContainer.addChild(shieldGfx);
+  if (!worldContainer.children.includes(autoBeamGfx))   worldContainer.addChild(autoBeamGfx);
+  const sw=WW(), sh=WH(), WS=Math.round(14*MS);
   // Paredes perimetrales
   spawnWall(sw/2,    WS/2,    sw, WS);
   spawnWall(sw/2,    sh-WS/2, sw, WS);
@@ -2634,7 +2664,16 @@ function updateAutoBeam(now) {
 // ================================================================
 function drawWarpGrid() {
   warpGridGfx.clear();
-  const sw = W(), sh = H();
+  // Only draw grid for the visible area (+ padding for warp displacement)
+  const pad = 200; // extra padding for blackhole warp effect
+  const vx0 = cam.x - pad, vy0 = cam.y - pad;
+  const vx1 = cam.x + W() + pad, vy1 = cam.y + H() + pad;
+  // Snap to grid step boundaries
+  const gx0 = Math.max(0, Math.floor(vx0 / GRID_STEP) * GRID_STEP);
+  const gy0 = Math.max(0, Math.floor(vy0 / GRID_STEP) * GRID_STEP);
+  const gx1 = Math.min(WW(), Math.ceil(vx1 / GRID_STEP) * GRID_STEP);
+  const gy1 = Math.min(WH(), Math.ceil(vy1 / GRID_STEP) * GRID_STEP);
+
   const blackholes = pool.filter(e => e.alive && e.variant === 'enemy_blackhole');
 
   // Efecto "bola sobre tela":
@@ -2673,10 +2712,10 @@ function drawWarpGrid() {
   // Grid appearance constants defined in config block
 
   // Dibujar segmento a segmento para poder variar el alpha con la distancia
-  for (let gy = 0; gy <= sh + GRID_STEP; gy += GRID_STEP) {
-    const row = Math.min(gy, sh);
-    for (let gx = 0; gx < sw; gx += GRID_STEP) {
-      const x0 = gx, x1 = Math.min(gx + GRID_STEP, sw);
+  for (let gy = gy0; gy <= gy1 + GRID_STEP; gy += GRID_STEP) {
+    const row = Math.min(gy, WH());
+    for (let gx = gx0; gx < gx1; gx += GRID_STEP) {
+      const x0 = gx, x1 = Math.min(gx + GRID_STEP, WW());
       const [ax, ay] = warp(x0, row);
       const [bx, by] = warp(x1, row);
       // Alpha proporcional al desplazamiento — líneas más deformadas son más visibles
@@ -2688,10 +2727,10 @@ function drawWarpGrid() {
     }
   }
   // Vertical lines
-  for (let gx = 0; gx <= sw + GRID_STEP; gx += GRID_STEP) {
-    const col = Math.min(gx, sw);
-    for (let gy = 0; gy < sh; gy += GRID_STEP) {
-      const y0 = gy, y1 = Math.min(gy + GRID_STEP, sh);
+  for (let gx = gx0; gx <= gx1 + GRID_STEP; gx += GRID_STEP) {
+    const col = Math.min(gx, WW());
+    for (let gy = gy0; gy < gy1; gy += GRID_STEP) {
+      const y0 = gy, y1 = Math.min(gy + GRID_STEP, WH());
       const [ax, ay] = warp(col, y0);
       const [bx, by] = warp(col, y1);
       const def = Math.hypot(ax - col, ay - y0) + Math.hypot(bx - col, by - y1);
@@ -2790,6 +2829,9 @@ function formatTime(s) {
 }
 
 function showOverlay(isGameOver, lastRun) {
+  // Reset camera for intro animation
+  cam.x = 0; cam.y = 0;
+  worldContainer.x = 0; worldContainer.y = 0;
   renderLB(lastRun);
   const ov = document.getElementById('overlay');
   const h1 = ov.querySelector('h1');
@@ -2840,7 +2882,7 @@ function updateIntroAnimation(now) {
     g.endFill();
     g.pivot.x = ew/2; g.pivot.y = eh/2;
     g.x = sx; g.y = sy;
-    app.stage.addChild(g);
+    worldContainer.addChild(g);
     introEnemies.push({ gfx:g, x:sx, y:sy, vx, vy, w:ew, h:eh, rot:Math.random()*0.04-.02 });
   }
 
@@ -2856,14 +2898,14 @@ function updateIntroAnimation(now) {
     e.vy = Math.max(-2.5, Math.min(2.5, e.vy));
     // Remove if far out of bounds
     if (e.x < -120 || e.x > sw+120 || e.y < -120 || e.y > sh+120) {
-      app.stage.removeChild(e.gfx); e.gfx.destroy();
+      worldContainer.removeChild(e.gfx); e.gfx.destroy();
       introEnemies.splice(i, 1);
     }
   }
 }
 
 function clearIntroEnemies() {
-  for (const e of introEnemies) { app.stage.removeChild(e.gfx); e.gfx.destroy(); }
+  for (const e of introEnemies) { worldContainer.removeChild(e.gfx); e.gfx.destroy(); }
   introEnemies.length = 0;
 }
 
@@ -2871,15 +2913,11 @@ function clearIntroEnemies() {
 // GAME LOOP
 // ================================================================
 let prevTime = null;
-let gameTime = 0;  // virtual game clock (advances at GAME_SPEED rate)
 app.ticker.add(() => {
-  const realNow = performance.now();
-  if (prevTime===null) { prevTime=realNow; gameTime=realNow; return; }
-  const realDelta = realNow - prevTime;
-  prevTime = realNow;
-  gameTime += realDelta * GAME_SPEED;
-  const now = gameTime;
-  const dt = Math.min((realDelta * GAME_SPEED)/16.6667, 3);
+  const now = performance.now();
+  if (prevTime===null) { prevTime=now; return; }
+  const dt = Math.min((now-prevTime)/16.6667, 3);
+  prevTime = now;
 
   if (!gameStarted) {
     updateIntroAnimation(now);
@@ -2899,6 +2937,7 @@ app.ticker.add(() => {
     updateSerpents(now);
     purge();
     syncGraphics();
+    updateCamera();
     updateEnergyBars(now);
     updateFragments(dt);
     updateEnemyParticles(dt);
@@ -2918,10 +2957,10 @@ app.ticker.add(() => {
     if (player && !player.alive && !gameOver) {
       gameOver = true;
       // Remove player sprite immediately
-      if (player.gfx) { app.stage.removeChild(player.gfx); player.gfx.destroy(); player.gfx = null; }
+      if (player.gfx) { worldContainer.removeChild(player.gfx); player.gfx.destroy(); player.gfx = null; }
       const lastRun = recordRun(score, performance.now() - sessionStartTime);
       // Show big death explosion for 5s, then overlay
-      showDeathExplosion(player.x, player.y, () => showOverlay(true, lastRun));
+      showDeathExplosion(player.x - cam.x, player.y - cam.y, () => showOverlay(true, lastRun));
     }
   }
   hudUpdate(now);
@@ -3035,13 +3074,13 @@ function showDeathExplosion(px, py, callback) {
 function startGame() {
   // Kill all existing pool entities and their gfx
   for (const e of pool) {
-    if (e.gfx)     { app.stage.removeChild(e.gfx);     e.gfx.destroy();     e.gfx = null; }
-    if (e._ringGfx){ app.stage.removeChild(e._ringGfx); e._ringGfx.destroy(); e._ringGfx = null; }
+    if (e.gfx)     { worldContainer.removeChild(e.gfx);     e.gfx.destroy();     e.gfx = null; }
+    if (e._ringGfx){ worldContainer.removeChild(e._ringGfx); e._ringGfx.destroy(); e._ringGfx = null; }
   }
   for (const s of serpents) {
-    app.stage.removeChild(s.lineGfx); s.lineGfx.destroy();
+    worldContainer.removeChild(s.lineGfx); s.lineGfx.destroy();
     for (const seg of s.segs) {
-      if (seg.entity.gfx) { app.stage.removeChild(seg.entity.gfx); seg.entity.gfx.destroy(); }
+      if (seg.entity.gfx) { worldContainer.removeChild(seg.entity.gfx); seg.entity.gfx.destroy(); }
     }
   }
   serpents.length = 0;
@@ -3070,6 +3109,13 @@ function startGame() {
   warpGridGfx.clear();
   sessionStartTime = performance.now();
   setup();  // re-creates player, walls, re-adds persistent gfx layers
+  // Center camera on player
+  if (_isTouchDevice && player) {
+    cam.x = Math.max(0, Math.min(player.x - app.screen.width/2, WW() - app.screen.width));
+    cam.y = Math.max(0, Math.min(player.y - app.screen.height/2, WH() - app.screen.height));
+    worldContainer.x = -cam.x;
+    worldContainer.y = -cam.y;
+  }
   gameStarted = true;
   hideOverlay();
 }
@@ -3090,12 +3136,10 @@ showOverlay(false);
 (function initMobileControls() {
   if (!isMobileControlsActive) return;
 
-  // Prevent all default touch behavior on the canvas
   const pixiCanvas = app.view;
   pixiCanvas.style.touchAction = 'none';
   document.body.style.touchAction = 'none';
 
-  // Show joystick zones
   const zoneLeft  = document.getElementById('zone-left');
   const zoneRight = document.getElementById('zone-right');
   zoneLeft.style.display  = 'block';
@@ -3106,103 +3150,66 @@ showOverlay(false);
   if (scoreHud) { scoreHud.style.bottom = 'auto'; scoreHud.style.top = '8px'; scoreHud.style.fontSize = '36px'; }
   const massHud = document.getElementById('massHud');
   if (massHud) { massHud.style.bottom = 'auto'; massHud.style.top = '50px'; massHud.style.fontSize = '16px'; }
-  const phaseTimer = document.getElementById('phaseTimer');
-  if (phaseTimer) { phaseTimer.style.fontSize = '48px'; }
-  const phaseLabel = document.getElementById('phaseLabel');
-  if (phaseLabel) { phaseLabel.style.top = '58px'; }
 
-  // Mobile-friendly overlay hint
   const clickHint = document.querySelector('#overlay .click-hint');
   if (clickHint) clickHint.textContent = 'TOCA para comenzar';
 
-  // ---- LEFT JOYSTICK: MOVEMENT (pulgar izquierdo) ----
+  // ---- LEFT JOYSTICK: MOVEMENT ----
   const joyLeft = nipplejs.create({
-    zone: zoneLeft,
-    mode: 'dynamic',
+    zone: zoneLeft, mode: 'dynamic',
     position: { left: '50%', top: '50%' },
     color: 'rgba(0, 255, 200, 0.35)',
-    size: 110,
-    threshold: 0.05,
-    fadeTime: 150,
-    multitouch: true,
-    maxNumberOfNipples: 1,
-    dataOnly: false,
-    restOpacity: 0.25,
+    size: 110, threshold: 0.05, fadeTime: 150,
+    multitouch: true, maxNumberOfNipples: 1,
+    dataOnly: false, restOpacity: 0.25,
   });
 
   let touchKeys = { KeyW: false, KeyA: false, KeyS: false, KeyD: false };
-
   function clearTouchKeys() {
-    for (const k in touchKeys) {
-      if (touchKeys[k]) { keys[k] = false; touchKeys[k] = false; }
-    }
+    for (const k in touchKeys) { if (touchKeys[k]) { keys[k] = false; touchKeys[k] = false; } }
   }
 
   joyLeft.on('move', function(evt, data) {
     if (!player || !player.alive || gameOver || paused) return;
-    const vx = data.vector.x;
-    const vy = data.vector.y; // nipplejs: y+ = up (math)
-    const deadzone = 0.25;
-
+    const vx = data.vector.x, vy = data.vector.y;
+    const dz = 0.25;
     clearTouchKeys();
-
-    if (vx > deadzone)  { keys.KeyD = true; touchKeys.KeyD = true; }
-    if (vx < -deadzone) { keys.KeyA = true; touchKeys.KeyA = true; }
-    if (vy > deadzone)  { keys.KeyW = true; touchKeys.KeyW = true; }
-    if (vy < -deadzone) { keys.KeyS = true; touchKeys.KeyS = true; }
+    if (vx > dz)  { keys.KeyD = true; touchKeys.KeyD = true; }
+    if (vx < -dz) { keys.KeyA = true; touchKeys.KeyA = true; }
+    if (vy > dz)  { keys.KeyW = true; touchKeys.KeyW = true; }
+    if (vy < -dz) { keys.KeyS = true; touchKeys.KeyS = true; }
   });
+  joyLeft.on('end', clearTouchKeys);
 
-  joyLeft.on('end', function() {
-    clearTouchKeys();
-  });
-
-  // ---- RIGHT JOYSTICK: AIM + FIRE (pulgar derecho) ----
+  // ---- RIGHT JOYSTICK: AIM + FIRE ----
   const joyRight = nipplejs.create({
-    zone: zoneRight,
-    mode: 'dynamic',
+    zone: zoneRight, mode: 'dynamic',
     position: { left: '50%', top: '50%' },
     color: 'rgba(255, 255, 100, 0.35)',
-    size: 110,
-    threshold: 0.05,
-    fadeTime: 150,
-    multitouch: true,
-    maxNumberOfNipples: 1,
-    dataOnly: false,
-    restOpacity: 0.25,
+    size: 110, threshold: 0.05, fadeTime: 150,
+    multitouch: true, maxNumberOfNipples: 1,
+    dataOnly: false, restOpacity: 0.25,
   });
 
   joyRight.on('move', function(evt, data) {
     if (!player || !player.alive || gameOver || paused) return;
     const vx = data.vector.x;
-    const vy = -data.vector.y; // flip for screen coords (y+ = down)
+    const vy = -data.vector.y; // flip for screen coords
     mouse.x = player.x + vx * 400;
     mouse.y = player.y + vy * 400;
     mouse.down = true;
   });
+  joyRight.on('end', function() { mouse.down = false; });
 
-  joyRight.on('end', function() {
-    mouse.down = false;
-  });
-
-  // Prevent context menu on long press
-  document.addEventListener('contextmenu', function(e) { e.preventDefault(); }, { passive: false });
-
-  // Prevent pinch-zoom
-  document.addEventListener('touchmove', function(e) {
-    if (e.touches.length > 1) e.preventDefault();
-  }, { passive: false });
-
-  // Prevent double-tap zoom
+  // Prevent context menu / pinch-zoom / double-tap zoom
+  document.addEventListener('contextmenu', e => e.preventDefault(), { passive: false });
+  document.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
   let lastTapTime = 0;
-  document.addEventListener('touchend', function(e) {
+  document.addEventListener('touchend', e => {
     const now = Date.now();
     if (now - lastTapTime < 300) e.preventDefault();
     lastTapTime = now;
   }, { passive: false });
-
-  // Re-request fullscreen after game over (when user taps overlay to restart)
-  const origStartGame = window.startGame || startGame;
-
 })();
 </script>
 </body>
