@@ -3,7 +3,33 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Game Engine - Fases</title>
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#111111">
+  <title>Space Shooter</title>
+  <script>
+    // Inline PWA manifest via blob URL — allows "Install" / "Add to Home Screen"
+    // which launches the game completely without browser chrome
+    const _manifest = JSON.stringify({
+      name: "Space Shooter",
+      short_name: "SpaceShooter",
+      start_url: location.href,
+      display: "fullscreen",
+      orientation: "landscape",
+      background_color: "#111111",
+      theme_color: "#111111",
+      icons: [{
+        src: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23111'/><polygon points='50,15 65,85 35,85' fill='%2300ffcc'/></svg>",
+        sizes: "any", type: "image/svg+xml"
+      }]
+    });
+    const _mBlob = new Blob([_manifest], { type: 'application/json' });
+    const _mLink = document.createElement('link');
+    _mLink.rel = 'manifest';
+    _mLink.href = URL.createObjectURL(_mBlob);
+    document.head.appendChild(_mLink);
+  </script>
   <style>
     html, body { margin: 0; padding: 0; overflow: hidden; background: #111; width: 100vw; height: 100vh; }
     canvas { display: block; }
@@ -344,7 +370,7 @@ try {
 if (_isTouchDevice) {
   MS = 0.5;
   isMobileControlsActive = true;
-  WORLD_W = 5000; WORLD_H = 5000;
+  WORLD_W = 2500; WORLD_H = 2500;
 
   // --- Speed reduction (1/5 slower = 0.8×) ---
   const SPD = 0.8;
@@ -380,8 +406,8 @@ if (_isTouchDevice) {
   WALL_MAX_LONG  = Math.round(WALL_MAX_LONG * MS);
   WALL_MARGIN    = Math.round(WALL_MARGIN * 2);  // more margin in big world
   WALL_MIN_SEP   = Math.round(WALL_MIN_SEP * MS);
-  WALL_COUNT_MIN = 20;   // more walls in 5000×5000
-  WALL_COUNT_MAX = 35;
+  WALL_COUNT_MIN = 12;   // walls for 2500×2500
+  WALL_COUNT_MAX = 20;
 
   // Fullscreen on first touch
   document.addEventListener('touchstart', function fs() {
@@ -2409,7 +2435,6 @@ function hudUpdate(now) {
   document.getElementById('hMass').textContent = 'MASA: ' + totalMass;
 
   if (gameOver) {
-    elInfo.textContent = "GAME OVER - reload to play again";
     elPhaseTimer.textContent="✕"; elPhaseTimer.style.color="#ff4444";
     return;
   }
