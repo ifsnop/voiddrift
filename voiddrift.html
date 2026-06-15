@@ -405,9 +405,10 @@ if (_isTouchDevice) {
   WALL_MIN_LONG  = Math.round(WALL_MIN_LONG * MS);
   WALL_MAX_LONG  = Math.round(WALL_MAX_LONG * MS);
   WALL_MARGIN    = Math.round(WALL_MARGIN * 2);  // more margin in big world
-  WALL_MIN_SEP   = Math.round(WALL_MIN_SEP * MS);
-  WALL_COUNT_MIN = 12;   // walls for 2500×2500
-  WALL_COUNT_MAX = 20;
+  WALL_MIN_SEP   = Math.round(WALL_MIN_SEP * MS * 0.6); // tighter packing for dense walls
+
+  WALL_COUNT_MIN = 90;   // ~10x for 2500×2500
+  WALL_COUNT_MAX = 130;
 
   // Fullscreen on first touch
   document.addEventListener('touchstart', function fs() {
@@ -1916,12 +1917,13 @@ function addScore(mass, ex, ey) {
   spawnScorePopup(ex, ey, pts);
 }
 
-function spawnScorePopup(x, y, pts) {
+function spawnScorePopup(x, y, pts, label) {
   const el = document.createElement('div');
   el.className = 'score-popup';
-  el.textContent = '+' + pts;
-  el.style.left = x + 'px';
-  el.style.top  = (y - 20) + 'px';
+  el.textContent = label || ('+' + pts);
+  // Convert world coords to screen coords
+  el.style.left = (x - cam.x) + 'px';
+  el.style.top  = (y - cam.y - 20) + 'px';
   document.body.appendChild(el);
   let vy = -1.5, life = 1400, last = performance.now();
   function step(now) {
@@ -1944,6 +1946,149 @@ let shieldBarExpiry     = 0;
 let shieldActive        = false;
 let shieldUsedMs        = 0;
 const shieldHitMap = new Map();
+let shieldPowerupActive = false;  // keeps shield on without Space key
+
+// ================================================================
+// POWERUP SYSTEM
+// ================================================================
+let killCount       = 0;
+let nextPowerupAt   = 5;     // first powerup after 5 kills
+const powerups      = [];    // active powerup pickups on the field
+let missileAutoEnd  = 0;     // timestamp when missile powerup expires
+let missileAutoLast = 0;     // last auto-missile fire time
+
+const POWERUP_TYPES = ['S','M','L','F'];
+const POWERUP_COLORS = { S: 0x4488ff, M: 0xff8833, L: 0x44ffff, F: 0xffff33 };
+const POWERUP_LABELS = { S: 'ESCUDO', M: 'MISILES', L: 'LÁSER', F: 'POTENCIA' };
+const POWERUP_PICKUP_RADIUS = 35;
+
+function spawnPowerup() {
+  // Pick a random type
+  const type = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+  const col = POWERUP_COLORS[type];
+
+  // Find a valid position (not inside walls, not too close to player)
+  let px, py, valid;
+  for (let attempts = 0; attempts < 50; attempts++) {
+    px = 80 + Math.random() * (WW() - 160);
+    py = 80 + Math.random() * (WH() - 160);
+    valid = true;
+    // Check walls
+    for (const e of pool) {
+      if (!e.alive || e.type !== TYPE.WALL) continue;
+      if (Math.abs(px - e.x) < e.halfW + 30 && Math.abs(py - e.y) < e.halfH + 30) {
+        valid = false; break;
+      }
+    }
+    // Check distance to player
+    if (valid && player && player.alive) {
+      const dx = px - player.x, dy = py - player.y;
+      if (Math.sqrt(dx*dx + dy*dy) < 120) valid = false;
+    }
+    if (valid) break;
+  }
+  if (!valid) { px = WW() * 0.5; py = WH() * 0.3; }
+
+  // Create visual: glowing circle + letter
+  const container = new PIXI.Container();
+  container.x = px; container.y = py;
+
+  const glow = new PIXI.Graphics();
+  glow.beginFill(col, 0.15); glow.drawCircle(0, 0, 28); glow.endFill();
+  glow.beginFill(col, 0.08); glow.drawCircle(0, 0, 42); glow.endFill();
+  container.addChild(glow);
+
+  const ring = new PIXI.Graphics();
+  ring.lineStyle(2, col, 0.7);
+  ring.drawCircle(0, 0, 22);
+  container.addChild(ring);
+
+  const txt = new PIXI.Text(type, {
+    fontFamily: 'monospace', fontSize: 22, fontWeight: 'bold',
+    fill: col, align: 'center',
+  });
+  txt.anchor.set(0.5, 0.5);
+  container.addChild(txt);
+
+  worldContainer.addChild(container);
+
+  powerups.push({
+    type, x: px, y: py, gfx: container, glow, ring,
+    spawnTime: performance.now(),
+  });
+}
+
+function applyPowerup(type) {
+  if (type === 'S') {
+    // Shield: activate until depleted
+    shieldUsedMs = 0;
+    shieldActive = true;
+    shieldPowerupActive = true;
+    shieldBarExpiry = performance.now() + 60000;
+  } else if (type === 'M') {
+    // Missiles: auto-fire 1 every 5s for 60s
+    missileAutoEnd  = performance.now() + 60000;
+    missileAutoLast = performance.now(); // fire first one immediately
+    addLockTarget();
+    fireMissile();
+  } else if (type === 'L') {
+    // Laser beam: toggle on
+    autoBeamOn = true;
+    autoBeamTarget = null;
+  } else if (type === 'F') {
+    // Firepower: increase spread (cumulative)
+    if (currentWeapon !== 'normal') { currentWeapon = 'normal'; }
+    weaponSpread = Math.min(7, weaponSpread + 1);
+  }
+}
+
+function updatePowerups(now) {
+  if (!player || !player.alive) return;
+  for (let i = powerups.length - 1; i >= 0; i--) {
+    const p = powerups[i];
+    // Pulse animation
+    const t = (now - p.spawnTime) / 1000;
+    const scale = 1 + Math.sin(t * 3) * 0.15;
+    p.gfx.scale.set(scale);
+    p.ring.rotation = t * 1.5;
+    p.glow.alpha = 0.6 + Math.sin(t * 2) * 0.3;
+
+    // Check pickup
+    const dx = player.x - p.x, dy = player.y - p.y;
+    if (Math.sqrt(dx*dx + dy*dy) < POWERUP_PICKUP_RADIUS) {
+      applyPowerup(p.type);
+      // Pickup flash effect
+      spawnFragments(p.x, p.y, 0, 0, POWERUP_COLORS[p.type], 20);
+      // Show label popup
+      spawnScorePopup(p.x, p.y, 0, POWERUP_LABELS[p.type]);
+      // Remove
+      worldContainer.removeChild(p.gfx);
+      p.gfx.destroy();
+      powerups.splice(i, 1);
+    }
+  }
+}
+
+function updateMissileAuto(now) {
+  if (now < missileAutoEnd && now - missileAutoLast >= 5000) {
+    missileAutoLast = now;
+    addLockTarget();
+    fireMissile();
+  }
+}
+
+function clearPowerups() {
+  for (const p of powerups) {
+    worldContainer.removeChild(p.gfx);
+    p.gfx.destroy();
+  }
+  powerups.length = 0;
+  killCount = 0;
+  nextPowerupAt = 5;
+  shieldPowerupActive = false;
+  missileAutoEnd = 0;
+  missileAutoLast = 0;
+}
 
 // --- BLACKHOLE / GRID state ---
 
@@ -1990,6 +2135,14 @@ function onEnemyDeath(enemy, playerKill = false) {
   if (playerKill) {
     score += mass * SCORE_MULTIPLIER;
     addScore(mass, enemy.x, enemy.y);
+    // Powerup spawning (mobile only)
+    if (isMobileControlsActive) {
+      killCount++;
+      if (killCount >= nextPowerupAt) {
+        spawnPowerup();
+        nextPowerupAt = Math.ceil(nextPowerupAt + nextPowerupAt * 0.5);
+      }
+    }
   }
 
   // Per-type death explosion — size and count scale with enemy mass
@@ -2364,8 +2517,12 @@ function inputUpdate(now) {
     // Gastar carga
     shieldUsedMs = Math.min(SHIELD_MAX_MS, shieldUsedMs + app.ticker.deltaMS);
     shieldBarExpiry = now + 3500;
-    if (shieldUsedMs >= SHIELD_MAX_MS || !spDown) {
-      // Se agoto o el jugador solto SPACE
+    if (shieldUsedMs >= SHIELD_MAX_MS) {
+      // Se agoto
+      shieldActive = false;
+      shieldPowerupActive = false;
+    } else if (!spDown && !shieldPowerupActive) {
+      // El jugador solto SPACE (no aplica si fue powerup)
       shieldActive = false;
     }
   } else {
@@ -2971,6 +3128,8 @@ app.ticker.add(() => {
     updateBirthEffects();
     updateMissiles(dt, now);
     updateMissileExhaust(dt);
+    updateMissileAuto(now);
+    updatePowerups(now);
     updateLockReticles(now);
     updatePulses();
     updateImpulseFlashes();
@@ -3133,6 +3292,7 @@ function startGame() {
   phase7NextSpawn = 0;
   shieldActive = false;
   shieldUsedMs = 0;
+  clearPowerups();
   warpGridGfx.clear();
   sessionStartTime = performance.now();
   setup();  // re-creates player, walls, re-adds persistent gfx layers
@@ -3171,11 +3331,28 @@ showOverlay(false);
   zoneLeft.style.display  = 'block';
   zoneRight.style.display = 'block';
 
-  // Adjust HUD for mobile
+  // Adjust HUD for mobile — avoid overlaps with joystick zones
   const scoreHud = document.getElementById('scoreHud');
-  if (scoreHud) { scoreHud.style.bottom = 'auto'; scoreHud.style.top = '8px'; scoreHud.style.fontSize = '36px'; }
+  if (scoreHud) {
+    scoreHud.style.bottom = 'auto'; scoreHud.style.right = 'auto';
+    scoreHud.style.top = '6px'; scoreHud.style.left = '50%';
+    scoreHud.style.transform = 'translateX(-50%)';
+    scoreHud.style.fontSize = '32px';
+    scoreHud.style.textAlign = 'center';
+  }
   const massHud = document.getElementById('massHud');
-  if (massHud) { massHud.style.bottom = 'auto'; massHud.style.top = '50px'; massHud.style.fontSize = '16px'; }
+  if (massHud) {
+    massHud.style.bottom = 'auto';
+    massHud.style.top = '6px'; massHud.style.left = '10px';
+    massHud.style.fontSize = '14px';
+  }
+  const phaseTimer = document.getElementById('phaseTimer');
+  if (phaseTimer) { phaseTimer.style.fontSize = '40px'; phaseTimer.style.top = '4px'; }
+  const phaseLabel = document.getElementById('phaseLabel');
+  if (phaseLabel) { phaseLabel.style.top = '48px'; phaseLabel.style.fontSize = '11px'; }
+  // Hide verbose weapon info on mobile (no keyboard)
+  const hud = document.getElementById('hud');
+  if (hud) hud.style.display = 'none';
 
   const clickHint = document.querySelector('#overlay .click-hint');
   if (clickHint) clickHint.textContent = 'TOCA para comenzar';
