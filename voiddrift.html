@@ -64,6 +64,7 @@
     display: flex; flex-direction: column; align-items: center;
     justify-content: center; z-index: 100; color: #fff;
     font-family: monospace; cursor: pointer; user-select: none;
+    overflow-y: auto; padding: 10px 0;
   }
   #overlay h1 { font-size: 2rem; margin: 0 0 6px; color: #00ffcc;
     text-shadow: 0 0 18px #00ffcc; letter-spacing: 3px; }
@@ -364,6 +365,7 @@ let MS = 1;   // mobile size scale
 let isMobileControlsActive = false;
 let WORLD_W = 0, WORLD_H = 0;   // set after detection
 const cam = { x: 0, y: 0 };     // camera top-left in world coords
+const aimVector = { x: 0, y: 0, active: false }; // right joystick aim direction
 
 const _isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 try {
@@ -1962,32 +1964,13 @@ const POWERUP_COLORS = { S: 0x4488ff, M: 0xff8833, L: 0x44ffff, F: 0xffff33 };
 const POWERUP_LABELS = { S: 'ESCUDO', M: 'MISILES', L: 'LÁSER', F: 'POTENCIA' };
 const POWERUP_PICKUP_RADIUS = 35;
 
-function spawnPowerup() {
+function spawnPowerup(spawnX, spawnY) {
   // Pick a random type
   const type = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
   const col = POWERUP_COLORS[type];
 
-  // Find a valid position (not inside walls, not too close to player)
-  let px, py, valid;
-  for (let attempts = 0; attempts < 50; attempts++) {
-    px = 80 + Math.random() * (WW() - 160);
-    py = 80 + Math.random() * (WH() - 160);
-    valid = true;
-    // Check walls
-    for (const e of pool) {
-      if (!e.alive || e.type !== TYPE.WALL) continue;
-      if (Math.abs(px - e.x) < e.halfW + 30 && Math.abs(py - e.y) < e.halfH + 30) {
-        valid = false; break;
-      }
-    }
-    // Check distance to player
-    if (valid && player && player.alive) {
-      const dx = px - player.x, dy = py - player.y;
-      if (Math.sqrt(dx*dx + dy*dy) < 120) valid = false;
-    }
-    if (valid) break;
-  }
-  if (!valid) { px = WW() * 0.5; py = WH() * 0.3; }
+  // Use provided position (dead enemy location)
+  const px = spawnX, py = spawnY;
 
   // Create visual: glowing circle + letter
   const container = new PIXI.Container();
@@ -2139,7 +2122,7 @@ function onEnemyDeath(enemy, playerKill = false) {
     if (isMobileControlsActive) {
       killCount++;
       if (killCount >= nextPowerupAt) {
-        spawnPowerup();
+        spawnPowerup(enemy.x, enemy.y);
         nextPowerupAt = Math.ceil(nextPowerupAt + nextPowerupAt * 0.5);
       }
     }
@@ -2977,19 +2960,32 @@ function renderLB(lastRun) {
   const tbT = document.getElementById('tbTimes');
   const glow = 'style="color:#00ffcc;text-shadow:0 0 8px #00ffcc,0 0 2px #fff"';
 
-  tbS.innerHTML = scores.length
-    ? scores.map((r,i)=>{
+  // Limit records to fit screen — reserve ~200px for title/headers/hint
+  const rowH = 22;
+  const maxRows = Math.max(3, Math.floor((window.innerHeight - 200) / rowH));
+  const visScores = scores.slice(0, maxRows);
+  const visTimes  = times.slice(0, maxRows);
+
+  tbS.innerHTML = visScores.length
+    ? visScores.map((r,i)=>{
         const hi = lastRun && i===lastRun.scoreRank && i<20;
         return `<tr><td ${hi?glow:''}>${i+1}</td><td ${hi?glow:''}>${r.name}</td><td ${hi?glow:''}>${r.score}</td></tr>`;
       }).join('')
     : '<tr><td colspan="3" style="color:#555">sin registros</td></tr>';
 
-  tbT.innerHTML = times.length
-    ? times.map((r,i)=>{
+  tbT.innerHTML = visTimes.length
+    ? visTimes.map((r,i)=>{
         const hi = lastRun && i===lastRun.timeRank && i<20;
         return `<tr><td ${hi?glow:''}>${i+1}</td><td ${hi?glow:''}>${r.name}</td><td ${hi?glow:''}>${formatTime(r.time)}</td></tr>`;
       }).join('')
     : '<tr><td colspan="3" style="color:#555">sin registros</td></tr>';
+
+  // On small screens, stack tables vertically and shrink fonts
+  const tablesDiv = document.querySelector('#overlay .tables');
+  if (tablesDiv && window.innerHeight < 500) {
+    tablesDiv.style.gap = '12px';
+    tablesDiv.style.fontSize = '0.65rem';
+  }
 
   // Last run summary below tables
   const prev = document.getElementById('lastRunInfo');
@@ -2997,7 +2993,7 @@ function renderLB(lastRun) {
   if (lastRun) {
     const div = document.createElement('div');
     div.id = 'lastRunInfo';
-    div.style.cssText = 'margin-top:20px;text-align:center;font-size:0.9rem;line-height:2;';
+    div.style.cssText = 'margin-top:10px;text-align:center;font-size:0.78rem;line-height:1.8;';
     div.innerHTML = `<span style="color:#aaa">Tu última partida —</span>
       <span style="color:#00ffcc;text-shadow:0 0 10px #00ffcc"> ${lastRun.name}</span><br>
       <span style="color:#ffdd44;text-shadow:0 0 8px #ffdd44">SCORE: ${lastRun.scoreVal}</span>
@@ -3115,6 +3111,11 @@ app.ticker.add(() => {
   if (!gameOver && !paused) {
     enemyAI(now);
     emitAllEnemyFx(now);
+    // Update aim direction relative to current player position (mobile)
+    if (aimVector.active && player && player.alive) {
+      mouse.x = player.x + aimVector.x * 400;
+      mouse.y = player.y + aimVector.y * 400;
+    }
     inputUpdate(now);
     updateBulletFade();
     physicsStep(dt, now);
@@ -3418,13 +3419,15 @@ showOverlay(false);
 
     joyRight.on('move', function(evt, data) {
       if (!player || !player.alive || gameOver || paused) return;
-      const vx = data.vector.x;
-      const vy = -data.vector.y; // flip for screen coords
-      mouse.x = player.x + vx * 400;
-      mouse.y = player.y + vy * 400;
+      aimVector.x = data.vector.x;
+      aimVector.y = -data.vector.y; // flip for screen coords
+      aimVector.active = true;
       mouse.down = true;
     });
-    joyRight.on('end', function() { mouse.down = false; });
+    joyRight.on('end', function() {
+      aimVector.active = false;
+      mouse.down = false;
+    });
   }
 })();
 </script>
