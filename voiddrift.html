@@ -237,7 +237,7 @@ const ENEMY_DAMAGE = {
 };
 
 // --- SHIELD ---
-const SHIELD_MAX_MS    = 3000;
+let SHIELD_MAX_MS    = 3000;
 const SHIELD_COOLDOWN  = 20000;   // recarga lenta
 const SHIELD_MIN_TO_USE = 200;    // ms mínimos de carga para poder activar
 let SHIELD_RADIUS    = 36;
@@ -286,7 +286,7 @@ const HIT_CD_MS      = 1200;
 
 // --- AUTO-BEAM (arma 4) ---
 let AUTOBEAM_RADIUS     = 80;     // radio de búsqueda de objetivo (px)
-const AUTOBEAM_DAMAGE     = 1.5;    // daño por tick (1/4 del laser)
+let AUTOBEAM_DAMAGE     = 1.5;    // daño por tick (1/4 del laser)
 const AUTOBEAM_TICK_MS    = 120;    // ms entre ticks de daño
 const AUTOBEAM_MIN_SHOW   = 250;    // ms mínimos de rayo visible tras matar
 
@@ -1959,6 +1959,15 @@ const powerups      = [];    // active powerup pickups on the field
 let missileAutoEnd  = 0;     // timestamp when missile powerup expires
 let missileAutoLast = 0;     // last auto-missile fire time
 
+// Progressive powerup levels (0-7, max 8 modes each)
+let missileLevel    = 0;
+let laserLevel      = 0;
+let shieldLevel     = 0;
+const MISSILE_CADENCE   = [5000, 4000, 3000, 2000, 1500, 1000, 500, 200]; // ms between shots per level
+const SHIELD_BASE_MS    = 3000;   // base shield duration
+const AUTOBEAM_BASE_RAD = AUTOBEAM_RADIUS; // store base (already scaled by MS)
+const AUTOBEAM_BASE_DMG = AUTOBEAM_DAMAGE;
+
 const POWERUP_TYPES = ['S','M','L','F'];
 const POWERUP_COLORS = { S: 0x4488ff, M: 0xff8833, L: 0x44ffff, F: 0xffff33 };
 const POWERUP_LABELS = { S: 'ESCUDO', M: 'MISILES', L: 'LÁSER', F: 'POTENCIA' };
@@ -2003,19 +2012,29 @@ function spawnPowerup(spawnX, spawnY) {
 
 function applyPowerup(type) {
   if (type === 'S') {
-    // Shield: activate until depleted
+    // Shield: recharge fully + increase max duration (up to 8 levels)
+    shieldLevel = Math.min(7, shieldLevel + 1);
+    SHIELD_MAX_MS = SHIELD_BASE_MS + shieldLevel * 1500; // 3s → 13.5s at max
     shieldUsedMs = 0;
     shieldActive = true;
     shieldPowerupActive = true;
     shieldBarExpiry = performance.now() + 60000;
   } else if (type === 'M') {
-    // Missiles: auto-fire 1 every 5s for 60s
-    missileAutoEnd  = performance.now() + 60000;
-    missileAutoLast = performance.now(); // fire first one immediately
-    addLockTarget();
-    fireMissile();
+    // Missiles: +30s duration, faster cadence per level (up to 8 levels)
+    missileLevel = Math.min(7, missileLevel + 1);
+    const remaining = Math.max(0, missileAutoEnd - performance.now());
+    missileAutoEnd = performance.now() + remaining + 30000;
+    // Fire first one immediately on activation
+    if (remaining === 0) {
+      missileAutoLast = performance.now();
+      addLockTarget();
+      fireMissile();
+    }
   } else if (type === 'L') {
-    // Laser beam: toggle on
+    // Laser beam: increase range + damage per level (up to 8 levels)
+    laserLevel = Math.min(7, laserLevel + 1);
+    AUTOBEAM_RADIUS = Math.round(AUTOBEAM_BASE_RAD * (1 + laserLevel * 0.5)); // +50% per level
+    AUTOBEAM_DAMAGE = AUTOBEAM_BASE_DMG * (1 + laserLevel * 0.4);             // +40% per level
     autoBeamOn = true;
     autoBeamTarget = null;
   } else if (type === 'F') {
@@ -2042,8 +2061,11 @@ function updatePowerups(now) {
       applyPowerup(p.type);
       // Pickup flash effect
       spawnFragments(p.x, p.y, 0, 0, POWERUP_COLORS[p.type], 20);
-      // Show label popup
-      spawnScorePopup(p.x, p.y, 0, POWERUP_LABELS[p.type]);
+      // Show label popup with current level
+      const lvl = p.type==='S' ? shieldLevel : p.type==='M' ? missileLevel :
+                  p.type==='L' ? laserLevel : weaponSpread;
+      const lvlText = POWERUP_LABELS[p.type] + (lvl > 0 ? ' ×' + (lvl+1) : '');
+      spawnScorePopup(p.x, p.y, 0, lvlText);
       // Remove
       worldContainer.removeChild(p.gfx);
       p.gfx.destroy();
@@ -2053,7 +2075,9 @@ function updatePowerups(now) {
 }
 
 function updateMissileAuto(now) {
-  if (now < missileAutoEnd && now - missileAutoLast >= 5000) {
+  if (now >= missileAutoEnd) return;
+  const cadence = MISSILE_CADENCE[Math.min(missileLevel - 1, 7)] || 5000;
+  if (now - missileAutoLast >= cadence) {
     missileAutoLast = now;
     addLockTarget();
     fireMissile();
@@ -2071,6 +2095,13 @@ function clearPowerups() {
   shieldPowerupActive = false;
   missileAutoEnd = 0;
   missileAutoLast = 0;
+  // Reset progressive levels
+  missileLevel = 0;
+  laserLevel   = 0;
+  shieldLevel  = 0;
+  SHIELD_MAX_MS   = SHIELD_BASE_MS;
+  AUTOBEAM_RADIUS = AUTOBEAM_BASE_RAD;
+  AUTOBEAM_DAMAGE = AUTOBEAM_BASE_DMG;
 }
 
 // --- BLACKHOLE / GRID state ---
