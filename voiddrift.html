@@ -440,7 +440,9 @@ function WH() { return WORLD_H || app.screen.height; }
 function updateCamera() {
   if (!_isTouchDevice || !player || !player.alive) return;
   const sw = app.screen.width, sh = app.screen.height;
-  const mx = sw * 0.20, my = sh * 0.20; // 20% edge margin
+  // Wider margin on the narrow axis so the player sees more vertically
+  const mx = sw > sh ? sw * 0.20 : sw * 0.30;  // wide axis: 20%
+  const my = sh < sw ? sh * 0.30 : sh * 0.20;  // narrow axis: 30%
 
   // Player screen position
   const psx = player.x - cam.x;
@@ -1968,9 +1970,9 @@ const SHIELD_BASE_MS    = 3000;   // base shield duration
 const AUTOBEAM_BASE_RAD = AUTOBEAM_RADIUS; // store base (already scaled by MS)
 const AUTOBEAM_BASE_DMG = AUTOBEAM_DAMAGE;
 
-const POWERUP_TYPES = ['S','M','L','F'];
-const POWERUP_COLORS = { S: 0x4488ff, M: 0xff8833, L: 0x44ffff, F: 0xffff33 };
-const POWERUP_LABELS = { S: 'ESCUDO', M: 'MISILES', L: 'LÁSER', F: 'POTENCIA' };
+const POWERUP_TYPES = ['S','M','L','F','H'];
+const POWERUP_COLORS = { S: 0x4488ff, M: 0xff8833, L: 0x44ffff, F: 0xffff33, H: 0xff3366 };
+const POWERUP_LABELS = { S: 'ESCUDO', M: 'MISILES', L: 'LÁSER', F: 'POTENCIA', H: 'VIDA' };
 const POWERUP_PICKUP_RADIUS = 35;
 
 function spawnPowerup(spawnX, spawnY) {
@@ -1995,12 +1997,27 @@ function spawnPowerup(spawnX, spawnY) {
   ring.drawCircle(0, 0, 22);
   container.addChild(ring);
 
-  const txt = new PIXI.Text(type, {
-    fontFamily: 'monospace', fontSize: 22, fontWeight: 'bold',
-    fill: col, align: 'center',
-  });
-  txt.anchor.set(0.5, 0.5);
-  container.addChild(txt);
+  if (type === 'H') {
+    // Draw heart shape
+    const heart = new PIXI.Graphics();
+    heart.beginFill(col);
+    const s = 1.4;
+    heart.moveTo(0 * s, -4 * s);
+    heart.bezierCurveTo(-2 * s, -10 * s, -10 * s, -10 * s, -10 * s, -4 * s);
+    heart.bezierCurveTo(-10 * s,  2 * s,  0 * s,   8 * s,  0 * s, 12 * s);
+    heart.bezierCurveTo( 0 * s,   8 * s,  10 * s,  2 * s, 10 * s, -4 * s);
+    heart.bezierCurveTo(10 * s, -10 * s,   2 * s, -10 * s,  0 * s, -4 * s);
+    heart.endFill();
+    heart.y = -1;
+    container.addChild(heart);
+  } else {
+    const txt = new PIXI.Text(type, {
+      fontFamily: 'monospace', fontSize: 22, fontWeight: 'bold',
+      fill: col, align: 'center',
+    });
+    txt.anchor.set(0.5, 0.5);
+    container.addChild(txt);
+  }
 
   worldContainer.addChild(container);
 
@@ -2041,6 +2058,12 @@ function applyPowerup(type) {
     // Firepower: increase spread (cumulative)
     if (currentWeapon !== 'normal') { currentWeapon = 'normal'; }
     weaponSpread = Math.min(7, weaponSpread + 1);
+  } else if (type === 'H') {
+    // Health: fully restore player HP
+    if (player && player.alive) {
+      player.energy = player.maxEnergy;
+      playerHPBarExpiry = performance.now() + 3000;
+    }
   }
 }
 
@@ -2063,7 +2086,7 @@ function updatePowerups(now) {
       spawnFragments(p.x, p.y, 0, 0, POWERUP_COLORS[p.type], 20);
       // Show label popup with current level
       const lvl = p.type==='S' ? shieldLevel : p.type==='M' ? missileLevel :
-                  p.type==='L' ? laserLevel : weaponSpread;
+                  p.type==='L' ? laserLevel : p.type==='F' ? weaponSpread : -1;
       const lvlText = POWERUP_LABELS[p.type] + (lvl > 0 ? ' ×' + (lvl+1) : '');
       spawnScorePopup(p.x, p.y, 0, lvlText);
       // Remove
