@@ -186,7 +186,7 @@ const SPAWNER_PULSE_COUNT       = 3;     // ondas concéntricas por evento
 // --- FOLLOWER ---
 const FOLLOWER_IMPULSE_INTERVAL_MS = 5000;
 const FOLLOWER_BRAKE_FACTOR        = 0.08;  // conserva poco de vel anterior
-let FOLLOWER_IMPULSE_SPEED       = 9;
+let FOLLOWER_IMPULSE_SPEED       = 6;
 
 // --- HITTER ---
 const HITTER_SHOOT_INTERVAL_MS  = 2500;
@@ -225,7 +225,7 @@ const ENERGY = {
   enemy_basic:1, enemy_heavy:5, enemy_boss:15,
   enemy_spawner:12, enemy_follower:3, enemy_hitter:7,
   enemy_blackhole: 15*10,  // mitad de vida (10x el boss en lugar de 20x)
-  player:10, wall:Infinity,
+  player:14, wall:Infinity,
   enemy_serpent: SERPENT_ENERGY,  // per-segment energy handled separately
 };
 
@@ -237,7 +237,7 @@ const ENEMY_DAMAGE = {
 };
 
 // --- SHIELD ---
-let SHIELD_MAX_MS    = 3000;
+const SHIELD_MAX_MS  = 3000;
 const SHIELD_COOLDOWN  = 20000;   // recarga lenta
 const SHIELD_MIN_TO_USE = 200;    // ms mínimos de carga para poder activar
 let SHIELD_RADIUS    = 36;
@@ -900,9 +900,18 @@ const PHASE7_HITTER_INTERVAL  = 400;  // ms entre cada hitter
 const PHASE7_BH_TIMEOUT_MS    = 30000; // si no hay BH en este tiempo → spawn uno
 const PHASE7_SERPENT_INTERVAL = 10000; // ms entre spawns de serpient
 const PHASE7_SERPENT_MAX      = 5;    // máximo de serpientes simultáneas
+const PHASE7_MAX_LIVE_MASS    = 150;  // pausa el spawn periódico si la masa viva supera esto
 
 // wave alternates: 0=spawners, 1=hitters
 function phase7WaveType() { return phase7Wave % 2; }
+
+function getTotalEnemyMass() {
+  return pool.reduce((acc, e) => {
+    if (!e.alive || e.type !== TYPE.ENEMY) return acc;
+    const m = ENERGY[e.variant] ?? 1;
+    return acc + (isFinite(m) ? m : 0);
+  }, 0);
+}
 
 function phase7StartWave(now) {
   phase7Started   = true;
@@ -924,8 +933,8 @@ function phase7Update(now) {
     return;
   }
 
-  // ── Spawn periódico de la oleada actual ──
-  if (now >= phase7NextSpawn) {
+  // ── Spawn periódico de la oleada actual (pausado si hay demasiada masa viva) ──
+  if (now >= phase7NextSpawn && getTotalEnemyMass() < PHASE7_MAX_LIVE_MASS) {
     const type = phase7WaveType();
     const limit = type === 0 ? PHASE7_SPAWNER_COUNT : PHASE7_HITTERS_PER_WAVE;
 
@@ -1948,9 +1957,10 @@ let score = 0;
 let playerHPBarExpiry   = 0;
 let shieldBarExpiry     = 0;
 let shieldActive        = false;
-let shieldUsedMs        = 0;
+let shieldUsedMs        = 0;      // desktop-only: time-based charge (Space key)
 const shieldHitMap = new Map();
-let shieldPowerupActive = false;  // keeps shield on without Space key
+let mobileShieldEnergy    = 0;    // mobile-only: current HP of the hit-based shield (0 = none)
+let mobileShieldMaxEnergy = 0;    // mobile-only: capacity, 0 until first 'S' pickup
 
 // ================================================================
 // POWERUP SYSTEM
@@ -1966,7 +1976,7 @@ let missileLevel    = 0;
 let laserLevel      = 0;
 let shieldLevel     = 0;
 const MISSILE_CADENCE   = [5000, 4000, 3000, 2000, 1500, 1000, 500, 200]; // ms between shots per level
-const SHIELD_BASE_MS    = 3000;   // base shield duration
+const SHIELD_BASE_ENERGY = 14;    // mobile hit-based shield: base capacity == one player life
 const AUTOBEAM_BASE_RAD = AUTOBEAM_RADIUS; // store base (already scaled by MS)
 const AUTOBEAM_BASE_DMG = AUTOBEAM_DAMAGE;
 
@@ -1974,6 +1984,7 @@ const POWERUP_TYPES = ['S','M','L','F','H'];
 const POWERUP_COLORS = { S: 0x4488ff, M: 0xff8833, L: 0x44ffff, F: 0xffff33, H: 0xff3366 };
 const POWERUP_LABELS = { S: 'ESCUDO', M: 'MISILES', L: 'LÁSER', F: 'POTENCIA', H: 'VIDA' };
 const POWERUP_PICKUP_RADIUS = 35;
+const POWERUP_MAX_GAP = 20; // ceiling on kills-between-powerups so late-game drops never stop
 
 function spawnPowerup(spawnX, spawnY) {
   // Pick a random type
@@ -2029,13 +2040,12 @@ function spawnPowerup(spawnX, spawnY) {
 
 function applyPowerup(type) {
   if (type === 'S') {
-    // Shield: recharge fully + increase max duration (up to 8 levels)
+    // Mobile-only: hit-based shield — refill + raise capacity (up to 8 levels)
     shieldLevel = Math.min(7, shieldLevel + 1);
-    SHIELD_MAX_MS = SHIELD_BASE_MS + shieldLevel * 1500; // 3s → 13.5s at max
-    shieldUsedMs = 0;
-    shieldActive = true;
-    shieldPowerupActive = true;
-    shieldBarExpiry = performance.now() + 60000;
+    mobileShieldMaxEnergy = SHIELD_BASE_ENERGY * (1 + 0.5 * shieldLevel);
+    mobileShieldEnergy = mobileShieldMaxEnergy;
+    shieldActive = true;   // auto-raise — mobile has no Space key
+    shieldBarExpiry = performance.now() + PLAYER_HP_BAR_DURATION;
   } else if (type === 'M') {
     // Missiles: +30s duration, faster cadence per level (up to 8 levels)
     missileLevel = Math.min(7, missileLevel + 1);
@@ -2115,14 +2125,14 @@ function clearPowerups() {
   powerups.length = 0;
   killCount = 0;
   nextPowerupAt = 5;
-  shieldPowerupActive = false;
   missileAutoEnd = 0;
   missileAutoLast = 0;
   // Reset progressive levels
   missileLevel = 0;
   laserLevel   = 0;
   shieldLevel  = 0;
-  SHIELD_MAX_MS   = SHIELD_BASE_MS;
+  mobileShieldMaxEnergy = 0;
+  mobileShieldEnergy    = 0;
   AUTOBEAM_RADIUS = AUTOBEAM_BASE_RAD;
   AUTOBEAM_DAMAGE = AUTOBEAM_BASE_DMG;
 }
@@ -2177,7 +2187,7 @@ function onEnemyDeath(enemy, playerKill = false) {
       killCount++;
       if (killCount >= nextPowerupAt) {
         spawnPowerup(enemy.x, enemy.y);
-        nextPowerupAt = Math.ceil(nextPowerupAt + nextPowerupAt * 0.5);
+        nextPowerupAt = Math.min(POWERUP_MAX_GAP, Math.ceil(nextPowerupAt + nextPowerupAt * 0.5));
       }
     }
   }
@@ -2245,6 +2255,12 @@ function onCollision(a, b, ox, oy, now) {
       if (other.type === TYPE.PLAYER) {
         // Shield blocks enemy bullets — deflect and destroy
         if (shieldActive) {
+          if (isMobileControlsActive) {
+            // Mobile hit-based shield: absorb the hit into its own HP pool
+            mobileShieldEnergy = Math.max(0, mobileShieldEnergy - bullet.currentDamage);
+            shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
+            if (mobileShieldEnergy <= 0) shieldActive = false;
+          }
           spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, 0x88ffff, 8);
           bullet.alive = false;
           return;
@@ -2306,12 +2322,20 @@ function onCollision(a, b, ox, oy, now) {
     const pl    = a.type===TYPE.PLAYER ? a : b;
     const enemy = a.type===TYPE.ENEMY  ? a : b;
     // Shield absorbs melee contact too
-    if (!shieldActive && now - pl.lastHit > HIT_CD_MS) {
+    if (now - pl.lastHit > HIT_CD_MS) {
       pl.lastHit = now;
-      pl.energy -= ENEMY_DAMAGE[enemy.variant] ?? 1;
-      if (pl.energy <= 0) pl.alive = false;
-      playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
-      shieldBarExpiry   = now + PLAYER_HP_BAR_DURATION;
+      if (shieldActive) {
+        if (isMobileControlsActive) {
+          mobileShieldEnergy = Math.max(0, mobileShieldEnergy - (ENEMY_DAMAGE[enemy.variant] ?? 1));
+          if (mobileShieldEnergy <= 0) shieldActive = false;
+        }
+        shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
+      } else {
+        pl.energy -= ENEMY_DAMAGE[enemy.variant] ?? 1;
+        if (pl.energy <= 0) pl.alive = false;
+        playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
+        shieldBarExpiry   = now + PLAYER_HP_BAR_DURATION;
+      }
     }
   }
   applyImpulse(a, b, ox, oy);
@@ -2547,31 +2571,33 @@ function inputUpdate(now) {
   player.sleeping=false; player.sleepN=0;
 
   // --- SHIELD ---
-  // SHIELD: active while SPACE held and charge > 0. Recharges when inactive.
-  const spDown = keys["Space"];
+  // Desktop only: SHIELD active while SPACE held and charge > 0, recharges when inactive.
+  // Mobile shield is powerup-driven and hit-based — see applyPowerup('S') / onCollision.
+  if (!isMobileControlsActive) {
+    const spDown = keys["Space"];
 
-  if (shieldActive) {
-    // Gastar carga
-    shieldUsedMs = Math.min(SHIELD_MAX_MS, shieldUsedMs + app.ticker.deltaMS);
-    shieldBarExpiry = now + 3500;
-    if (shieldUsedMs >= SHIELD_MAX_MS) {
-      // Se agoto
-      shieldActive = false;
-      shieldPowerupActive = false;
-    } else if (!spDown && !shieldPowerupActive) {
-      // El jugador solto SPACE (no aplica si fue powerup)
-      shieldActive = false;
-    }
-  } else {
-    // Recargar siempre que el escudo este desactivado
-    if (shieldUsedMs > 0) {
-      shieldUsedMs = Math.max(0, shieldUsedMs - app.ticker.deltaMS * (SHIELD_MAX_MS / SHIELD_COOLDOWN));
-      shieldBarExpiry = now + 2000;
-    }
-    // Activar si SPACE pulsado y hay carga suficiente
-    if (spDown && shieldUsedMs <= SHIELD_MAX_MS - SHIELD_MIN_TO_USE) {
-      shieldActive = true;
+    if (shieldActive) {
+      // Gastar carga
+      shieldUsedMs = Math.min(SHIELD_MAX_MS, shieldUsedMs + app.ticker.deltaMS);
       shieldBarExpiry = now + 3500;
+      if (shieldUsedMs >= SHIELD_MAX_MS) {
+        // Se agoto
+        shieldActive = false;
+      } else if (!spDown) {
+        // El jugador solto SPACE
+        shieldActive = false;
+      }
+    } else {
+      // Recargar siempre que el escudo este desactivado
+      if (shieldUsedMs > 0) {
+        shieldUsedMs = Math.max(0, shieldUsedMs - app.ticker.deltaMS * (SHIELD_MAX_MS / SHIELD_COOLDOWN));
+        shieldBarExpiry = now + 2000;
+      }
+      // Activar si SPACE pulsado y hay carga suficiente
+      if (spDown && shieldUsedMs <= SHIELD_MAX_MS - SHIELD_MIN_TO_USE) {
+        shieldActive = true;
+        shieldBarExpiry = now + 3500;
+      }
     }
   }
 
@@ -2620,13 +2646,7 @@ function hudUpdate(now) {
   elFPS.textContent = "FPS: "+app.ticker.FPS.toFixed(0)+"  objs: "+pool.length;
 
   // Total mass on field (every alive enemy contributes its ENERGY value as mass)
-  const totalMass = pool.reduce((acc, e) => {
-    if (!e.alive || e.type !== TYPE.ENEMY) return acc;
-    const m = ENERGY[e.variant] ?? 1;
-    // Serpent: count each segment individually
-    return acc + (isFinite(m) ? m : 0);
-  }, 0);
-  document.getElementById('hMass').textContent = 'MASA: ' + totalMass;
+  document.getElementById('hMass').textContent = 'MASA: ' + getTotalEnemyMass();
 
   if (gameOver) {
     elPhaseTimer.textContent="✕"; elPhaseTimer.style.color="#ff4444";
@@ -2713,7 +2733,9 @@ function drawPlayerBars(now) {
   playerBarsGfx.drawRect(bx,byHP,BW,BH);
 
   // Shield bar — shows remaining charge (1 = full, 0 = empty)
-  const shFrac  = Math.max(0, 1 - shieldUsedMs / SHIELD_MAX_MS);
+  const shFrac  = isMobileControlsActive
+    ? (mobileShieldMaxEnergy > 0 ? Math.max(0, mobileShieldEnergy / mobileShieldMaxEnergy) : 0)
+    : Math.max(0, 1 - shieldUsedMs / SHIELD_MAX_MS);
   const shColor = shieldActive ? 0x00ffff : 0x0088ff;
   playerBarsGfx.lineStyle(0);
   playerBarsGfx.beginFill(0x001a33, 0.75*alpha);
