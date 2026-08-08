@@ -1960,6 +1960,8 @@ function spawnScorePopup(x, y, pts, label) {
   const el = document.createElement('div');
   el.className = 'score-popup';
   el.textContent = label || ('+' + pts);
+  // Score/powerup popups were swallowing most of the mobile screen at the base 52px size.
+  el.style.fontSize = isMobileControlsActive ? '18px' : '30px';
   // Convert world coords to screen coords
   el.style.left = (x - cam.x) + 'px';
   el.style.top  = (y - cam.y - 20) + 'px';
@@ -1999,6 +2001,7 @@ function refreshShieldBar(now) {
 // ================================================================
 let killCount       = 0;
 let nextPowerupAt   = 5;     // first powerup after 5 kills
+let powerupDropCount = 0;    // how many powerups have dropped this run — freezes the gap after POWERUP_GAP_FREEZE_AFTER
 const powerups      = [];    // active powerup pickups on the field
 let missileAutoEnd  = 0;     // timestamp when missile powerup expires
 let missileAutoLast = 0;     // last auto-missile fire time
@@ -2016,8 +2019,8 @@ const POWERUP_TYPES = ['S','M','L','F','H'];
 const POWERUP_COLORS = { S: 0x4488ff, M: 0xff8833, L: 0x44ffff, F: 0xffff33, H: 0xff3366 };
 const POWERUP_LABELS = { S: 'ESCUDO', M: 'MISILES', L: 'LÁSER', F: 'POTENCIA', H: 'VIDA' };
 const POWERUP_PICKUP_RADIUS = 35;
-const POWERUP_MAX_GAP = 10;    // ceiling on kills-between-powerups so late-game drops never stop
-const POWERUP_GROWTH_RATE = 0.3; // was 0.5 — gentler growth so the gap flattens out sooner
+const POWERUP_GROWTH_RATE = 0.5;      // ritmo original: cada powerup exige ×1.5 kills que el anterior
+const POWERUP_GAP_FREEZE_AFTER = 10;  // a partir del 10º powerup, el hueco deja de crecer y se queda fijo
 const POWERUP_SPAWN_WEIGHTS = { S: 1, M: 1, L: 1, F: 1, H: 2 }; // Vida cae más a menudo que el resto
 const POWERUP_MAX_ON_FIELD = 10; // tope de powerups vivos en el mapa a la vez
 const POWERUP_LIFETIME_MS = 20000; // caducan si no se recogen — hay que ir a buscarlos
@@ -2106,8 +2109,8 @@ function applyPowerup(type) {
   } else if (type === 'L') {
     // Laser beam: increase range + damage per level (up to 8 levels)
     laserLevel = Math.min(7, laserLevel + 1);
-    AUTOBEAM_RADIUS = Math.round(AUTOBEAM_BASE_RAD * (1 + laserLevel * 0.5)); // +50% per level
-    AUTOBEAM_DAMAGE = AUTOBEAM_BASE_DMG * (1 + laserLevel * 0.4);             // +40% per level
+    AUTOBEAM_RADIUS = Math.round(AUTOBEAM_BASE_RAD * (1 + laserLevel * 0.25)); // +25% per level (was +50%)
+    AUTOBEAM_DAMAGE = AUTOBEAM_BASE_DMG * (1 + laserLevel * 0.2);              // +20% per level (was +40%)
     autoBeamOn = true;
     autoBeamTarget = null;
   } else if (type === 'F') {
@@ -2183,6 +2186,7 @@ function clearPowerups() {
   powerups.length = 0;
   killCount = 0;
   nextPowerupAt = 5;
+  powerupDropCount = 0;
   missileAutoEnd = 0;
   missileAutoLast = 0;
   // Reset progressive levels
@@ -2253,7 +2257,10 @@ function onEnemyDeath(enemy, playerKill = false) {
       killCount++;
       if (killCount >= nextPowerupAt && powerups.length < POWERUP_MAX_ON_FIELD) {
         spawnPowerup(enemy.x, enemy.y);
-        nextPowerupAt = Math.min(POWERUP_MAX_GAP, Math.ceil(nextPowerupAt + nextPowerupAt * POWERUP_GROWTH_RATE));
+        powerupDropCount++;
+        if (powerupDropCount < POWERUP_GAP_FREEZE_AFTER) {
+          nextPowerupAt = Math.ceil(nextPowerupAt + nextPowerupAt * POWERUP_GROWTH_RATE);
+        }
       }
     }
   }
