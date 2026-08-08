@@ -2475,40 +2475,6 @@ function physicsStep(dt, now) {
     if (v2<SLEEP_THRESH) { if(++e.sleepN>SLEEP_FRAMES){e.vx=e.vy=0;e.sleeping=true;} }
     else { e.sleepN=0; }
   }
-  // Shield force field — repels enemies and destroys incoming enemy bullets
-  if (player && player.alive && shieldActive) {
-    for (let i=0; i<pool.length; i++) {
-      const e=pool[i];
-      if (!e.alive) continue;
-
-      // Intercept enemy bullets that enter shield radius
-      if (e.type===TYPE.BULLET && e.isEnemyBullet) {
-        const bdx=e.x-player.x, bdy=e.y-player.y;
-        if (Math.sqrt(bdx*bdx+bdy*bdy) < SHIELD_RADIUS + e.halfW) {
-          spawnFragments(e.x, e.y, e.vx, e.vy, 0x88ffff, 6);
-          e.alive = false;
-        }
-        continue;
-      }
-
-      if (e.type!==TYPE.ENEMY) continue;
-      const sdx=e.x-player.x, sdy=e.y-player.y;
-      const sdist=Math.sqrt(sdx*sdx+sdy*sdy);
-      const minD=SHIELD_RADIUS+Math.max(e.halfW,e.halfH);
-      if (sdist<minD&&sdist>0.01) {
-        const snx=sdx/sdist, sny=sdy/sdist;
-        e.vx+=snx*8*e.invMass; e.vy+=sny*8*e.invMass;
-        e.x+=snx*(minD-sdist); e.y+=sny*(minD-sdist);
-        e.sleeping=false; e.sleepN=0;
-        const lastSH=shieldHitMap.get(e.id)??0;
-        if (now-lastSH>SHIELD_HIT_CD) {
-          shieldHitMap.set(e.id,now);
-          e.energy-=SHIELD_DAMAGE; showEnergyBar(e,now);
-          if (e.energy<=0){e.alive=false;onEnemyDeath(e, true);}
-        }
-      }
-    }
-  }
   // Blackhole gravity fields (puede haber varios)
   const blackholes = pool.filter(e => e.alive && e.variant === 'enemy_blackhole');
   for (const bh of blackholes) {
@@ -2587,6 +2553,47 @@ function physicsStep(dt, now) {
       const oy=(a.halfH+b.halfH)-Math.abs(b.y-a.y);
       if (ox<=0||oy<=0) continue;
       onCollision(a,b,ox,oy,now);
+    }
+  }
+
+  // Shield force field — repels enemies and destroys incoming enemy bullets.
+  // Runs LAST (after broadphase) on purpose: if it ran earlier, a crowd of enemies
+  // being resolved against each other in the broadphase step could shove an already
+  // -repelled enemy straight back inside the shield radius the same frame, leaving it
+  // stuck oscillating there — dealing contact damage every frame — while nothing in the
+  // scene visibly appeared to "reach" the player. Running last guarantees every enemy
+  // ends the frame at or beyond the shield boundary.
+  if (player && player.alive && shieldActive) {
+    for (let i=0; i<pool.length; i++) {
+      const e=pool[i];
+      if (!e.alive) continue;
+
+      // Intercept enemy bullets that enter shield radius
+      if (e.type===TYPE.BULLET && e.isEnemyBullet) {
+        const bdx=e.x-player.x, bdy=e.y-player.y;
+        if (Math.sqrt(bdx*bdx+bdy*bdy) < SHIELD_RADIUS + e.halfW) {
+          spawnFragments(e.x, e.y, e.vx, e.vy, 0x88ffff, 6);
+          e.alive = false;
+        }
+        continue;
+      }
+
+      if (e.type!==TYPE.ENEMY) continue;
+      const sdx=e.x-player.x, sdy=e.y-player.y;
+      const sdist=Math.sqrt(sdx*sdx+sdy*sdy);
+      const minD=SHIELD_RADIUS+Math.max(e.halfW,e.halfH);
+      if (sdist<minD&&sdist>0.01) {
+        const snx=sdx/sdist, sny=sdy/sdist;
+        e.vx+=snx*8*e.invMass; e.vy+=sny*8*e.invMass;
+        e.x+=snx*(minD-sdist); e.y+=sny*(minD-sdist);
+        e.sleeping=false; e.sleepN=0;
+        const lastSH=shieldHitMap.get(e.id)??0;
+        if (now-lastSH>SHIELD_HIT_CD) {
+          shieldHitMap.set(e.id,now);
+          e.energy-=SHIELD_DAMAGE; showEnergyBar(e,now);
+          if (e.energy<=0){e.alive=false;onEnemyDeath(e, true);}
+        }
+      }
     }
   }
 }
