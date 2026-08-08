@@ -205,6 +205,8 @@ let FOLLOWER_IMPULSE_SPEED       = 6;
 const HITTER_SHOOT_INTERVAL_MS  = 2500;
 let HITTER_BULLET_SPEED       = 5;
 const HITTER_BULLET_DAMAGE      = 2;
+const HITTER_DRIFT_DELAY_MS     = 6000;  // tras este tiempo empieza a acercarse, no solo dispara y retrocede
+const HITTER_DRIFT_ACCEL        = 0.02;
 
 // --- BLACKHOLE ---
 let BLACKHOLE_BASE_RADIUS     = 520;   // radio ampliado
@@ -913,7 +915,8 @@ const PHASE7_HITTER_INTERVAL  = 400;  // ms entre cada hitter
 const PHASE7_BH_TIMEOUT_MS    = 30000; // si no hay BH en este tiempo → spawn uno
 const PHASE7_SERPENT_INTERVAL = 10000; // ms entre spawns de serpient
 const PHASE7_SERPENT_MAX      = 5;    // máximo de serpientes simultáneas
-const PHASE7_MAX_LIVE_MASS    = 150;  // pausa el spawn periódico si la masa viva supera esto
+const PHASE7_MAX_LIVE_MASS    = 400;  // pausa el spawn periódico si la masa viva supera esto
+                                       // ojo: un solo blackhole ya cuenta 150 de masa (ENERGY.enemy_blackhole)
 
 // wave alternates: 0=spawners, 1=hitters
 function phase7WaveType() { return phase7Wave % 2; }
@@ -1379,6 +1382,16 @@ function enemyAI(now) {
 
     // ---- HITTER ----
     if (e.variant === 'enemy_hitter') {
+      // Sin esto se queda plantado disparando desde su punto de spawn para siempre
+      // (el retroceso del disparo incluso lo aleja). Tras un rato, se acerca despacio.
+      if (!e._spawnTime) e._spawnTime = now;
+      if (now - e._spawnTime >= HITTER_DRIFT_DELAY_MS) {
+        const ddx = player.x - e.x, ddy = player.y - e.y;
+        const ddist = Math.sqrt(ddx*ddx + ddy*ddy) || 1;
+        e.vx += (ddx/ddist) * HITTER_DRIFT_ACCEL;
+        e.vy += (ddy/ddist) * HITTER_DRIFT_ACCEL;
+        e.sleeping = false; e.sleepN = 0;
+      }
       if (now - e.lastShot >= HITTER_SHOOT_INTERVAL_MS) {
         e.lastShot = now;
         const dx = player.x - e.x, dy = player.y - e.y;
@@ -1975,6 +1988,12 @@ const shieldHitMap = new Map();
 let mobileShieldEnergy    = 0;    // mobile-only: current HP of the hit-based shield (0 = none)
 let mobileShieldMaxEnergy = 0;    // mobile-only: capacity, 0 until first 'S' pickup
 
+// Only surface the shield bar when there's actually a shield to show — on mobile that
+// means the player has picked up at least one 'S' powerup this run (capacity > 0).
+function refreshShieldBar(now) {
+  if (!isMobileControlsActive || mobileShieldMaxEnergy > 0) shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
+}
+
 // ================================================================
 // POWERUP SYSTEM
 // ================================================================
@@ -2000,6 +2019,9 @@ const POWERUP_PICKUP_RADIUS = 35;
 const POWERUP_MAX_GAP = 10;    // ceiling on kills-between-powerups so late-game drops never stop
 const POWERUP_GROWTH_RATE = 0.3; // was 0.5 — gentler growth so the gap flattens out sooner
 const POWERUP_SPAWN_WEIGHTS = { S: 1, M: 1, L: 1, F: 1, H: 2 }; // Vida cae más a menudo que el resto
+const POWERUP_MAX_ON_FIELD = 10; // tope de powerups vivos en el mapa a la vez
+const POWERUP_LIFETIME_MS = 20000; // caducan si no se recogen — hay que ir a buscarlos
+const POWERUP_BLINK_MS = 2500;     // durante los últimos ms de vida, parpadean como aviso
 
 function pickPowerupType() {
   const total = POWERUP_TYPES.reduce((sum, t) => sum + (POWERUP_SPAWN_WEIGHTS[t] ?? 1), 0);
@@ -2105,8 +2127,20 @@ function updatePowerups(now) {
   if (!player || !player.alive) return;
   for (let i = powerups.length - 1; i >= 0; i--) {
     const p = powerups[i];
+    const age = now - p.spawnTime;
+
+    // Caducidad — si no se recoge a tiempo desaparece, parpadeando como aviso al final
+    if (age >= POWERUP_LIFETIME_MS) {
+      worldContainer.removeChild(p.gfx);
+      p.gfx.destroy();
+      powerups.splice(i, 1);
+      continue;
+    }
+    const timeLeft = POWERUP_LIFETIME_MS - age;
+    p.gfx.alpha = timeLeft < POWERUP_BLINK_MS ? (Math.sin(now / 90) > 0 ? 1 : 0.15) : 1;
+
     // Pulse animation
-    const t = (now - p.spawnTime) / 1000;
+    const t = age / 1000;
     const scale = 1 + Math.sin(t * 3) * 0.15;
     p.gfx.scale.set(scale);
     p.ring.rotation = t * 1.5;
@@ -2181,10 +2215,18 @@ function applyExplosionDamage(ex, ey, radius, damage, source) {
     if (e.type === TYPE.PLAYER) {
       if (now - e.lastHit > 200) {
         e.lastHit = now;
-        e.energy -= dmg;
-        if (e.energy <= 0) e.alive = false;
-        playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
-        shieldBarExpiry   = now + PLAYER_HP_BAR_DURATION;
+        if (shieldActive) {
+          if (isMobileControlsActive) {
+            mobileShieldEnergy = Math.max(0, mobileShieldEnergy - dmg);
+            if (mobileShieldEnergy <= 0) shieldActive = false;
+          }
+          shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
+        } else {
+          e.energy -= dmg;
+          if (e.energy <= 0) e.alive = false;
+          playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
+          refreshShieldBar(now);
+        }
       }
     } else if (e.type === TYPE.ENEMY) {
       e.energy -= dmg;
@@ -2209,7 +2251,7 @@ function onEnemyDeath(enemy, playerKill = false) {
     // Powerup spawning (mobile only)
     if (isMobileControlsActive) {
       killCount++;
-      if (killCount >= nextPowerupAt) {
+      if (killCount >= nextPowerupAt && powerups.length < POWERUP_MAX_ON_FIELD) {
         spawnPowerup(enemy.x, enemy.y);
         nextPowerupAt = Math.min(POWERUP_MAX_GAP, Math.ceil(nextPowerupAt + nextPowerupAt * POWERUP_GROWTH_RATE));
       }
@@ -2294,7 +2336,7 @@ function onCollision(a, b, ox, oy, now) {
           other.energy -= bullet.currentDamage;
           if (other.energy <= 0) other.alive = false;
           playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
-          shieldBarExpiry   = now + PLAYER_HP_BAR_DURATION;
+          refreshShieldBar(now);
         }
         spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, 0xff4444);
         applyBulletImpulse(bullet, other);
@@ -2362,7 +2404,7 @@ function onCollision(a, b, ox, oy, now) {
         pl.energy -= ENEMY_DAMAGE[enemy.variant] ?? 1;
         if (pl.energy <= 0) pl.alive = false;
         playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
-        shieldBarExpiry   = now + PLAYER_HP_BAR_DURATION;
+        refreshShieldBar(now);
       }
     }
   }
