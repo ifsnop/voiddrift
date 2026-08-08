@@ -79,6 +79,14 @@
       text-shadow: 0 0 12px #22ffaa, 0 0 4px #fff;
       letter-spacing: 1px;
     }
+  #minimap {
+      position: fixed; top: 132px; right: 18px;
+      width: 150px; height: 150px;
+      background: rgba(10,12,20,0.55);
+      border: 1px solid rgba(0,255,204,0.35);
+      border-radius: 4px;
+      pointer-events: none; z-index: 10;
+    }
   .score-popup {
     position: fixed; pointer-events: none; z-index: 50;
     font: bold 52px monospace; color: #ffdd44;
@@ -116,6 +124,7 @@
 <div id="phaseLabel">FASE --</div>
 <div id="scoreHud"><span id="hScore">0</span></div>
 <div id="massHud"><span id="hMass">MASA: 0</span></div>
+<canvas id="minimap"></canvas>
 <canvas id="deathExplosion"></canvas>
 <div id="zone-left" class="joystick-zone"></div>
 <div id="zone-right" class="joystick-zone"></div>
@@ -1984,11 +1993,22 @@ const POWERUP_TYPES = ['S','M','L','F','H'];
 const POWERUP_COLORS = { S: 0x4488ff, M: 0xff8833, L: 0x44ffff, F: 0xffff33, H: 0xff3366 };
 const POWERUP_LABELS = { S: 'ESCUDO', M: 'MISILES', L: 'LÁSER', F: 'POTENCIA', H: 'VIDA' };
 const POWERUP_PICKUP_RADIUS = 35;
-const POWERUP_MAX_GAP = 20; // ceiling on kills-between-powerups so late-game drops never stop
+const POWERUP_MAX_GAP = 10;    // ceiling on kills-between-powerups so late-game drops never stop
+const POWERUP_GROWTH_RATE = 0.3; // was 0.5 — gentler growth so the gap flattens out sooner
+const POWERUP_SPAWN_WEIGHTS = { S: 1, M: 1, L: 1, F: 1, H: 2 }; // Vida cae más a menudo que el resto
+
+function pickPowerupType() {
+  const total = POWERUP_TYPES.reduce((sum, t) => sum + (POWERUP_SPAWN_WEIGHTS[t] ?? 1), 0);
+  let r = Math.random() * total;
+  for (const t of POWERUP_TYPES) {
+    r -= POWERUP_SPAWN_WEIGHTS[t] ?? 1;
+    if (r <= 0) return t;
+  }
+  return POWERUP_TYPES[POWERUP_TYPES.length - 1];
+}
 
 function spawnPowerup(spawnX, spawnY) {
-  // Pick a random type
-  const type = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+  const type = pickPowerupType();
   const col = POWERUP_COLORS[type];
 
   // Use provided position (dead enemy location)
@@ -2187,7 +2207,7 @@ function onEnemyDeath(enemy, playerKill = false) {
       killCount++;
       if (killCount >= nextPowerupAt) {
         spawnPowerup(enemy.x, enemy.y);
-        nextPowerupAt = Math.min(POWERUP_MAX_GAP, Math.ceil(nextPowerupAt + nextPowerupAt * 0.5));
+        nextPowerupAt = Math.min(POWERUP_MAX_GAP, Math.ceil(nextPowerupAt + nextPowerupAt * POWERUP_GROWTH_RATE));
       }
     }
   }
@@ -2328,6 +2348,10 @@ function onCollision(a, b, ox, oy, now) {
         if (isMobileControlsActive) {
           mobileShieldEnergy = Math.max(0, mobileShieldEnergy - (ENEMY_DAMAGE[enemy.variant] ?? 1));
           if (mobileShieldEnergy <= 0) shieldActive = false;
+          // Visible feedback — melee absorption was previously silent, making real
+          // hits indistinguishable from the shield draining "on its own"
+          spawnFragments(pl.x, pl.y, enemy.vx*0.2, enemy.vy*0.2, 0x88ffff, 6);
+          spawnImpulseFlash(pl.x, pl.y);
         }
         shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
       } else {
@@ -2758,6 +2782,39 @@ function drawShield(now) {
   shieldGfx.beginFill(0x44aaff,pulse);
   shieldGfx.drawCircle(player.x,player.y,SHIELD_RADIUS);
   shieldGfx.endFill();
+}
+
+// --- MINIMAP ---
+const minimapCanvas = document.getElementById('minimap');
+const minimapCtx = minimapCanvas.getContext('2d');
+minimapCanvas.width = 150; minimapCanvas.height = 150;
+
+function drawMinimap() {
+  if (!player) return;
+  const mw = minimapCanvas.width, mh = minimapCanvas.height;
+  minimapCtx.clearRect(0, 0, mw, mh);
+  const sw = WW(), sh = WH();
+  const scaleX = mw / sw, scaleY = mh / sh;
+
+  // Viewport rectangle — only meaningful when the world is bigger than the screen (mobile)
+  if (_isTouchDevice) {
+    minimapCtx.strokeStyle = 'rgba(255,255,255,0.35)';
+    minimapCtx.lineWidth = 1;
+    minimapCtx.strokeRect(cam.x*scaleX, cam.y*scaleY, app.screen.width*scaleX, app.screen.height*scaleY);
+  }
+
+  for (let i = 0; i < pool.length; i++) {
+    const e = pool[i];
+    if (!e.alive || e.type !== TYPE.ENEMY) continue;
+    const col = ENEMY_COLOR[e.variant] ?? 0xff3333;
+    minimapCtx.fillStyle = '#' + col.toString(16).padStart(6, '0');
+    minimapCtx.fillRect(e.x*scaleX - 1.5, e.y*scaleY - 1.5, 3, 3);
+  }
+
+  minimapCtx.fillStyle = '#00ffcc';
+  minimapCtx.beginPath();
+  minimapCtx.arc(player.x*scaleX, player.y*scaleY, 3, 0, Math.PI*2);
+  minimapCtx.fill();
 }
 
 // ================================================================
@@ -3217,6 +3274,7 @@ app.ticker.add(() => {
     drawShield(now);
     drawAimLine();
     drawPlayerBars(now);
+    drawMinimap();
     if (player && !player.alive && !gameOver) {
       gameOver = true;
       // Remove player sprite immediately
@@ -3427,6 +3485,12 @@ showOverlay(false);
   if (phaseTimer) { phaseTimer.style.fontSize = '40px'; phaseTimer.style.top = '4px'; }
   const phaseLabel = document.getElementById('phaseLabel');
   if (phaseLabel) { phaseLabel.style.top = '48px'; phaseLabel.style.fontSize = '11px'; }
+  const minimapEl = document.getElementById('minimap');
+  if (minimapEl) {
+    minimapEl.style.top = '68px';
+    minimapEl.style.width = '110px'; minimapEl.style.height = '110px';
+    minimapEl.width = 110; minimapEl.height = 110;
+  }
   // Hide verbose weapon info on mobile (no keyboard)
   const hud = document.getElementById('hud');
   if (hud) hud.style.display = 'none';
