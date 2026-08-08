@@ -82,10 +82,13 @@
   #minimap {
       position: fixed; top: 132px; right: 18px;
       width: 150px; height: 150px;
-      background: rgba(10,12,20,0.55);
       border: 1px solid rgba(0,255,204,0.35);
       border-radius: 4px;
-      pointer-events: none; z-index: 10;
+      pointer-events: none; z-index: 20;
+    }
+  #powerupArrows {
+      position: fixed; inset: 0;
+      pointer-events: none; z-index: 11;
     }
   .score-popup {
     position: fixed; pointer-events: none; z-index: 50;
@@ -125,6 +128,7 @@
 <div id="scoreHud"><span id="hScore">0</span></div>
 <div id="massHud"><span id="hMass">MASA: 0</span></div>
 <canvas id="minimap"></canvas>
+<canvas id="powerupArrows"></canvas>
 <canvas id="deathExplosion"></canvas>
 <div id="zone-left" class="joystick-zone"></div>
 <div id="zone-right" class="joystick-zone"></div>
@@ -2793,6 +2797,14 @@ function drawMinimap() {
   if (!player) return;
   const mw = minimapCanvas.width, mh = minimapCanvas.height;
   minimapCtx.clearRect(0, 0, mw, mh);
+  // Draw the panel background/border ourselves — don't rely on CSS `background`
+  // rendering correctly behind a <canvas> on every mobile browser.
+  minimapCtx.fillStyle = 'rgba(10,12,20,0.65)';
+  minimapCtx.fillRect(0, 0, mw, mh);
+  minimapCtx.strokeStyle = 'rgba(0,255,204,0.45)';
+  minimapCtx.lineWidth = 1;
+  minimapCtx.strokeRect(0.5, 0.5, mw-1, mh-1);
+
   const sw = WW(), sh = WH();
   const scaleX = mw / sw, scaleY = mh / sh;
 
@@ -2811,10 +2823,77 @@ function drawMinimap() {
     minimapCtx.fillRect(e.x*scaleX - 1.5, e.y*scaleY - 1.5, 3, 3);
   }
 
+  for (let i = 0; i < powerups.length; i++) {
+    const p = powerups[i];
+    const col = POWERUP_COLORS[p.type] ?? 0xffffff;
+    minimapCtx.fillStyle = '#' + col.toString(16).padStart(6, '0');
+    const mx = p.x*scaleX, my = p.y*scaleY;
+    minimapCtx.beginPath();
+    minimapCtx.arc(mx, my, 2.5, 0, Math.PI*2);
+    minimapCtx.fill();
+  }
+
   minimapCtx.fillStyle = '#00ffcc';
   minimapCtx.beginPath();
   minimapCtx.arc(player.x*scaleX, player.y*scaleY, 3, 0, Math.PI*2);
   minimapCtx.fill();
+}
+
+// --- POWERUP OFF-SCREEN ARROWS ---
+const powerupArrowCanvas = document.getElementById('powerupArrows');
+const powerupArrowCtx = powerupArrowCanvas.getContext('2d');
+function resizePowerupArrowCanvas() {
+  powerupArrowCanvas.width = window.innerWidth;
+  powerupArrowCanvas.height = window.innerHeight;
+}
+resizePowerupArrowCanvas();
+
+function drawPowerupArrows() {
+  const cw = powerupArrowCanvas.width, ch = powerupArrowCanvas.height;
+  powerupArrowCtx.clearRect(0, 0, cw, ch);
+  if (!player || !powerups.length) return;
+
+  const cx = cw / 2, cy = ch / 2;
+  const margin = 28; // keep arrows fully inside the viewport
+  const halfW = cw/2 - margin, halfH = ch/2 - margin;
+
+  for (let i = 0; i < powerups.length; i++) {
+    const p = powerups[i];
+    const sx = p.x - cam.x, sy = p.y - cam.y;
+    // On-screen already (with a little slack for its own pickup radius) — no arrow needed
+    if (sx > -POWERUP_PICKUP_RADIUS && sx < cw+POWERUP_PICKUP_RADIUS &&
+        sy > -POWERUP_PICKUP_RADIUS && sy < ch+POWERUP_PICKUP_RADIUS) continue;
+
+    const dx = sx - cx, dy = sy - cy;
+    if (dx === 0 && dy === 0) continue;
+    const scale = Math.min(
+      dx !== 0 ? halfW / Math.abs(dx) : Infinity,
+      dy !== 0 ? halfH / Math.abs(dy) : Infinity
+    );
+    const ax = cx + dx*scale, ay = cy + dy*scale;
+    const angle = Math.atan2(dy, dx);
+    const col = '#' + (POWERUP_COLORS[p.type] ?? 0xffffff).toString(16).padStart(6, '0');
+
+    powerupArrowCtx.save();
+    powerupArrowCtx.translate(ax, ay);
+    powerupArrowCtx.rotate(angle);
+    powerupArrowCtx.fillStyle = col;
+    powerupArrowCtx.beginPath();
+    powerupArrowCtx.moveTo(12, 0);
+    powerupArrowCtx.lineTo(-8, -8);
+    powerupArrowCtx.lineTo(-8, 8);
+    powerupArrowCtx.closePath();
+    powerupArrowCtx.fill();
+    powerupArrowCtx.strokeStyle = 'rgba(255,255,255,0.8)';
+    powerupArrowCtx.lineWidth = 1;
+    powerupArrowCtx.stroke();
+    powerupArrowCtx.restore();
+
+    powerupArrowCtx.fillStyle = col;
+    powerupArrowCtx.font = 'bold 12px monospace';
+    powerupArrowCtx.textAlign = 'center';
+    powerupArrowCtx.fillText(p.type, ax - Math.cos(angle)*20, ay - Math.sin(angle)*20 + 4);
+  }
 }
 
 // ================================================================
@@ -3275,6 +3354,7 @@ app.ticker.add(() => {
     drawAimLine();
     drawPlayerBars(now);
     drawMinimap();
+    drawPowerupArrows();
     if (player && !player.alive && !gameOver) {
       gameOver = true;
       // Remove player sprite immediately
@@ -3287,7 +3367,10 @@ app.ticker.add(() => {
   hudUpdate(now);
 });
 
-window.addEventListener("resize", () => { app.renderer.resize(window.innerWidth, window.innerHeight); });
+window.addEventListener("resize", () => {
+  app.renderer.resize(window.innerWidth, window.innerHeight);
+  resizePowerupArrowCanvas();
+});
 
 function showDeathExplosion(px, py, callback) {
   const canvas = document.getElementById('deathExplosion');
@@ -3487,9 +3570,12 @@ showOverlay(false);
   if (phaseLabel) { phaseLabel.style.top = '48px'; phaseLabel.style.fontSize = '11px'; }
   const minimapEl = document.getElementById('minimap');
   if (minimapEl) {
+    // Proportional to the mobile viewport instead of a fixed pixel size
+    const mmSize = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.26);
+    const clamped = Math.max(70, Math.min(130, mmSize));
     minimapEl.style.top = '68px';
-    minimapEl.style.width = '110px'; minimapEl.style.height = '110px';
-    minimapEl.width = 110; minimapEl.height = 110;
+    minimapEl.style.width = clamped + 'px'; minimapEl.style.height = clamped + 'px';
+    minimapEl.width = clamped; minimapEl.height = clamped;
   }
   // Hide verbose weapon info on mobile (no keyboard)
   const hud = document.getElementById('hud');
