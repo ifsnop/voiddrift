@@ -39,6 +39,7 @@
       pointer-events: none; z-index: 10; line-height: 1.6;
     }
     #powerupLevels {
+      display: none; /* mobile-only — see initMobileControls() */
       position: fixed; top: 58px; left: 12px;
       font: bold 14px monospace; color: #fff;
       pointer-events: none; z-index: 10;
@@ -188,7 +189,7 @@
 // BUILD VERSION — formato YYMMDD-HHMM. Actualizar en CADA cambio que se
 // genere para este fichero (ver CLAUDE.md, sección "Build version").
 // ================================================================
-const BUILD_VERSION = "260809-2330";
+const BUILD_VERSION = "260809-2345";
 document.getElementById('hBuild').textContent = 'build ' + BUILD_VERSION;
 
 // ================================================================
@@ -3536,8 +3537,14 @@ app.ticker.add(() => {
     updateMissileExhaust(dt);
     updateMissileAuto(now);
     updatePowerups(now);
-    updatePowerupLevelDecay(now);
-    updatePowerupLevelsHud(now);
+    // Mobile-only: on desktop, weaponSpread is driven directly by the 1/2/3 weapon
+    // keys (see keydown handler) and never gets a spreadLevelExpiresAt from a powerup
+    // pickup, so it stays 0 forever — the decay check would see `now >= 0` as always
+    // true and reset weaponSpread back to 0 the very next frame, breaking the keys.
+    if (isMobileControlsActive) {
+      updatePowerupLevelDecay(now);
+      updatePowerupLevelsHud(now);
+    }
     updateLockReticles(now);
     updatePulses();
     updateImpulseFlashes();
@@ -3838,7 +3845,10 @@ if ('serviceWorker' in navigator) {
   // #hud gets hidden on mobile, but massHud (MASA:) moves to top:6px/left:10px right
   // above it — stack below massHud instead of on top of it (was hiding the S row).
   const powerupLevels = document.getElementById('powerupLevels');
-  if (powerupLevels) { powerupLevels.style.top = '28px'; powerupLevels.style.fontSize = '13px'; }
+  if (powerupLevels) {
+    powerupLevels.style.display = 'block';
+    powerupLevels.style.top = '28px'; powerupLevels.style.fontSize = '13px';
+  }
   // Hide verbose weapon info on mobile (no keyboard)
   const hud = document.getElementById('hud');
   if (hud) hud.style.display = 'none';
