@@ -38,6 +38,19 @@
       color: #fff; font: 14px monospace;
       pointer-events: none; z-index: 10; line-height: 1.6;
     }
+    #powerupLevels {
+      position: fixed; top: 58px; left: 12px;
+      font: bold 14px monospace; color: #fff;
+      pointer-events: none; z-index: 10;
+    }
+    #powerupLevels .pl-row {
+      display: flex; align-items: center; gap: 6px;
+      line-height: 1.5;
+    }
+    #powerupLevels .pl-label {
+      display: inline-block; width: 14px; text-align: center;
+      text-shadow: 0 0 6px currentColor;
+    }
     #phaseTimer {
       position: fixed; top: 8px; right: 18px;
       color: #fff; font: bold 80px monospace;
@@ -78,6 +91,19 @@
       text-align: left; line-height: 1;
       text-shadow: 0 0 12px #22ffaa, 0 0 4px #fff;
       letter-spacing: 1px;
+    }
+  #killHud {
+      position: fixed; bottom: 92px; right: 18px;
+      color: #ffaa66; font: bold 16px monospace;
+      pointer-events: none; z-index: 10;
+      text-align: right; line-height: 1;
+      text-shadow: 0 0 8px #ff8800;
+    }
+  #buildHud {
+      position: fixed; bottom: 54px; left: 18px;
+      color: #666; font: 11px monospace;
+      pointer-events: none; z-index: 10;
+      text-align: left; line-height: 1;
     }
   #minimap {
       position: fixed; top: 132px; right: 18px;
@@ -123,10 +149,19 @@
   <span id="hFPS">cargando...</span><br>
   <span id="hInfo"></span>
 </div>
+<div id="powerupLevels">
+  <div class="pl-row" id="plRow-S"><span class="pl-label" style="color:#4488ff">S</span><span id="plVal-S">0</span></div>
+  <div class="pl-row" id="plRow-M"><span class="pl-label" style="color:#ff8833">M</span><span id="plVal-M">0</span></div>
+  <div class="pl-row" id="plRow-L"><span class="pl-label" style="color:#44ffff">L</span><span id="plVal-L">0</span></div>
+  <div class="pl-row" id="plRow-F"><span class="pl-label" style="color:#ffff33">F</span><span id="plVal-F">0</span></div>
+  <div class="pl-row" id="plRow-H"><span class="pl-label" style="color:#ff3366">H</span><span id="plVal-H">0</span></div>
+</div>
 <div id="phaseTimer">--</div>
 <div id="phaseLabel">FASE --</div>
 <div id="scoreHud"><span id="hScore">0</span></div>
 <div id="massHud"><span id="hMass">MASA: 0</span></div>
+<div id="killHud"><span id="hKills">ENEMIGOS: 0</span></div>
+<div id="buildHud"><span id="hBuild"></span></div>
 <canvas id="minimap"></canvas>
 <canvas id="powerupArrows"></canvas>
 <canvas id="deathExplosion"></canvas>
@@ -150,6 +185,13 @@
 
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js"></script>
 <script>
+// ================================================================
+// BUILD VERSION — formato YYMMDD-HHMM. Actualizar en CADA cambio que se
+// genere para este fichero (ver CLAUDE.md, sección "Build version").
+// ================================================================
+const BUILD_VERSION = "260809-2015";
+document.getElementById('hBuild').textContent = 'build ' + BUILD_VERSION;
+
 // ================================================================
 // CONSTANTS - edita aqui para rebalancear el juego
 // ================================================================
@@ -204,7 +246,7 @@ let FOLLOWER_IMPULSE_SPEED       = 6;
 // --- HITTER ---
 const HITTER_SHOOT_INTERVAL_MS  = 2500;
 let HITTER_BULLET_SPEED       = 5;
-const HITTER_BULLET_DAMAGE      = 2;
+const HITTER_BULLET_DAMAGE      = 3;  // era 2 — apenas se notaba al recibir un impacto
 const HITTER_DRIFT_DELAY_MS     = 6000;  // tras este tiempo empieza a acercarse, no solo dispara y retrocede
 const HITTER_DRIFT_ACCEL        = 0.02;
 
@@ -267,7 +309,7 @@ let BULLET_SIZE   = { normal:6,   heavy:12,  laser:4 };
 
 // --- BALAS enemigas ---
 const ENEMY_BULLET_COLOR  = 0xff3333;
-let ENEMY_BULLET_SIZE   = 7;
+let ENEMY_BULLET_SIZE   = 10;  // era 7 — casi invisible tras el escalado 0.5x de móvil
 const ENEMY_BULLET_MASS   = 0.3;
 const ENEMY_BULLET_TRAVEL = 9999;  // balas enemigas no se desvanecen
 
@@ -2003,7 +2045,6 @@ let killCount       = 0;
 let nextPowerupAt   = 5;     // first powerup after 5 kills
 let powerupDropCount = 0;    // how many powerups have dropped this run — freezes the gap after POWERUP_GAP_FREEZE_AFTER
 const powerups      = [];    // active powerup pickups on the field
-let missileAutoEnd  = 0;     // timestamp when missile powerup expires
 let missileAutoLast = 0;     // last auto-missile fire time
 
 // Progressive powerup levels (0-7, max 8 modes each)
@@ -2011,7 +2052,18 @@ let missileLevel    = 0;
 let laserLevel      = 0;
 let shieldLevel     = 0;
 const MISSILE_CADENCE   = [5000, 4000, 3000, 2000, 1500, 1000, 500, 200]; // ms between shots per level
+
+// Cada nivel de un powerup dura POWERUP_LEVEL_DURATION_MS sin refrescarse; al agotarse
+// baja un nivel (y ese nivel arranca su propia cuenta atrás) — así hay que seguir
+// buscando powerups activamente en vez de acumular buffs para siempre.
+const POWERUP_LEVEL_DURATION_MS = 10000;
+const POWERUP_LEVEL_BLINK_MS    = 2000; // parpadea en el HUD justo antes de bajar de nivel
+let shieldLevelExpiresAt  = 0;
+let missileLevelExpiresAt = 0;
+let laserLevelExpiresAt   = 0;
+let spreadLevelExpiresAt  = 0;
 const SHIELD_BASE_ENERGY = 14;    // mobile hit-based shield: base capacity == one player life
+const SHIELD_INCOMING_DAMAGE_MULT = 2.0; // el escudo se gasta más rápido que la vida del jugador por el mismo golpe
 const AUTOBEAM_BASE_RAD = AUTOBEAM_RADIUS; // store base (already scaled by MS)
 const AUTOBEAM_BASE_DMG = AUTOBEAM_DAMAGE;
 
@@ -2088,21 +2140,23 @@ function spawnPowerup(spawnX, spawnY) {
 }
 
 function applyPowerup(type) {
+  const now = performance.now();
   if (type === 'S') {
     // Mobile-only: hit-based shield — refill + raise capacity (up to 8 levels)
     shieldLevel = Math.min(7, shieldLevel + 1);
     mobileShieldMaxEnergy = SHIELD_BASE_ENERGY * (1 + 0.5 * shieldLevel);
     mobileShieldEnergy = mobileShieldMaxEnergy;
     shieldActive = true;   // auto-raise — mobile has no Space key
-    shieldBarExpiry = performance.now() + PLAYER_HP_BAR_DURATION;
+    shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
+    shieldLevelExpiresAt = now + POWERUP_LEVEL_DURATION_MS;
   } else if (type === 'M') {
-    // Missiles: +30s duration, faster cadence per level (up to 8 levels)
+    // Missiles: faster cadence per level (up to 8 levels); fires while missileLevel > 0
+    const wasInactive = missileLevel === 0;
     missileLevel = Math.min(7, missileLevel + 1);
-    const remaining = Math.max(0, missileAutoEnd - performance.now());
-    missileAutoEnd = performance.now() + remaining + 30000;
+    missileLevelExpiresAt = now + POWERUP_LEVEL_DURATION_MS;
     // Fire first one immediately on activation
-    if (remaining === 0) {
-      missileAutoLast = performance.now();
+    if (wasInactive) {
+      missileAutoLast = now;
       addLockTarget();
       fireMissile();
     }
@@ -2113,15 +2167,17 @@ function applyPowerup(type) {
     AUTOBEAM_DAMAGE = AUTOBEAM_BASE_DMG * (1 + laserLevel * 0.2);              // +20% per level (was +40%)
     autoBeamOn = true;
     autoBeamTarget = null;
+    laserLevelExpiresAt = now + POWERUP_LEVEL_DURATION_MS;
   } else if (type === 'F') {
     // Firepower: increase spread (cumulative)
     if (currentWeapon !== 'normal') { currentWeapon = 'normal'; }
     weaponSpread = Math.min(7, weaponSpread + 1);
+    spreadLevelExpiresAt = now + POWERUP_LEVEL_DURATION_MS;
   } else if (type === 'H') {
     // Health: fully restore player HP
     if (player && player.alive) {
       player.energy = player.maxEnergy;
-      playerHPBarExpiry = performance.now() + 3000;
+      playerHPBarExpiry = now + 3000;
     }
   }
 }
@@ -2169,12 +2225,65 @@ function updatePowerups(now) {
 }
 
 function updateMissileAuto(now) {
-  if (now >= missileAutoEnd) return;
+  if (missileLevel <= 0) return;
   const cadence = MISSILE_CADENCE[Math.min(missileLevel - 1, 7)] || 5000;
   if (now - missileAutoLast >= cadence) {
     missileAutoLast = now;
     addLockTarget();
     fireMissile();
+  }
+}
+
+// Cada nivel de S/M/L/F cuenta atrás por su cuenta (POWERUP_LEVEL_DURATION_MS);
+// al llegar a 0 baja un nivel y esa nueva cota arranca su propia cuenta atrás.
+function updatePowerupLevelDecay(now) {
+  if (shieldLevel > 0 && now >= shieldLevelExpiresAt) {
+    shieldLevel--;
+    if (shieldLevel > 0) {
+      mobileShieldMaxEnergy = SHIELD_BASE_ENERGY * (1 + 0.5 * shieldLevel);
+      mobileShieldEnergy = Math.min(mobileShieldEnergy, mobileShieldMaxEnergy);
+      shieldLevelExpiresAt = now + POWERUP_LEVEL_DURATION_MS;
+    } else {
+      mobileShieldMaxEnergy = 0;
+      mobileShieldEnergy = 0;
+      shieldActive = false;
+      shieldLevelExpiresAt = 0;
+    }
+  }
+  if (missileLevel > 0 && now >= missileLevelExpiresAt) {
+    missileLevel--;
+    missileLevelExpiresAt = missileLevel > 0 ? now + POWERUP_LEVEL_DURATION_MS : 0;
+  }
+  if (laserLevel > 0 && now >= laserLevelExpiresAt) {
+    laserLevel--;
+    AUTOBEAM_RADIUS = Math.round(AUTOBEAM_BASE_RAD * (1 + laserLevel * 0.25));
+    AUTOBEAM_DAMAGE = AUTOBEAM_BASE_DMG * (1 + laserLevel * 0.2);
+    laserLevelExpiresAt = laserLevel > 0 ? now + POWERUP_LEVEL_DURATION_MS : 0;
+  }
+  if (weaponSpread > 0 && now >= spreadLevelExpiresAt) {
+    weaponSpread--;
+    spreadLevelExpiresAt = weaponSpread > 0 ? now + POWERUP_LEVEL_DURATION_MS : 0;
+  }
+}
+
+const POWERUP_LEVEL_ROWS = [
+  ['S', () => shieldLevel,  () => shieldLevelExpiresAt],
+  ['M', () => missileLevel, () => missileLevelExpiresAt],
+  ['L', () => laserLevel,   () => laserLevelExpiresAt],
+  ['F', () => weaponSpread, () => spreadLevelExpiresAt],
+  ['H', () => 0,            () => 0], // Vida no tiene nivel persistente — siempre 0
+];
+
+function updatePowerupLevelsHud(now) {
+  for (const [key, getLevel, getExpiry] of POWERUP_LEVEL_ROWS) {
+    const level = getLevel();
+    const valEl = document.getElementById('plVal-' + key);
+    if (valEl) valEl.textContent = level;
+    const rowEl = document.getElementById('plRow-' + key);
+    if (!rowEl) continue;
+    const expiresAt = getExpiry();
+    const warn = level > 0 && expiresAt > 0 && (expiresAt - now) < POWERUP_LEVEL_BLINK_MS;
+    rowEl.style.opacity = warn ? (Math.sin(now / 80) > 0 ? 1 : 0.25) : 1;
   }
 }
 
@@ -2187,7 +2296,6 @@ function clearPowerups() {
   killCount = 0;
   nextPowerupAt = 5;
   powerupDropCount = 0;
-  missileAutoEnd = 0;
   missileAutoLast = 0;
   // Reset progressive levels
   missileLevel = 0;
@@ -2197,6 +2305,10 @@ function clearPowerups() {
   mobileShieldEnergy    = 0;
   AUTOBEAM_RADIUS = AUTOBEAM_BASE_RAD;
   AUTOBEAM_DAMAGE = AUTOBEAM_BASE_DMG;
+  shieldLevelExpiresAt  = 0;
+  missileLevelExpiresAt = 0;
+  laserLevelExpiresAt   = 0;
+  spreadLevelExpiresAt  = 0;
 }
 
 // --- BLACKHOLE / GRID state ---
@@ -2221,7 +2333,7 @@ function applyExplosionDamage(ex, ey, radius, damage, source) {
         e.lastHit = now;
         if (shieldActive) {
           if (isMobileControlsActive) {
-            mobileShieldEnergy = Math.max(0, mobileShieldEnergy - dmg);
+            mobileShieldEnergy = Math.max(0, mobileShieldEnergy - dmg * SHIELD_INCOMING_DAMAGE_MULT);
             if (mobileShieldEnergy <= 0) shieldActive = false;
           }
           shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
@@ -2252,6 +2364,9 @@ function onEnemyDeath(enemy, playerKill = false) {
   if (playerKill) {
     score += mass * SCORE_MULTIPLIER;
     addScore(mass, enemy.x, enemy.y);
+    enemyKillCount++;
+    saveEnemyKillCount(enemyKillCount);
+    document.getElementById('hKills').textContent = 'ENEMIGOS: ' + enemyKillCount;
     // Powerup spawning (mobile only)
     if (isMobileControlsActive) {
       killCount++;
@@ -2330,7 +2445,7 @@ function onCollision(a, b, ox, oy, now) {
         if (shieldActive) {
           if (isMobileControlsActive) {
             // Mobile hit-based shield: absorb the hit into its own HP pool
-            mobileShieldEnergy = Math.max(0, mobileShieldEnergy - bullet.currentDamage);
+            mobileShieldEnergy = Math.max(0, mobileShieldEnergy - bullet.currentDamage * SHIELD_INCOMING_DAMAGE_MULT);
             shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
             if (mobileShieldEnergy <= 0) shieldActive = false;
           }
@@ -2399,7 +2514,7 @@ function onCollision(a, b, ox, oy, now) {
       pl.lastHit = now;
       if (shieldActive) {
         if (isMobileControlsActive) {
-          mobileShieldEnergy = Math.max(0, mobileShieldEnergy - (ENEMY_DAMAGE[enemy.variant] ?? 1));
+          mobileShieldEnergy = Math.max(0, mobileShieldEnergy - (ENEMY_DAMAGE[enemy.variant] ?? 1) * SHIELD_INCOMING_DAMAGE_MULT);
           if (mobileShieldEnergy <= 0) shieldActive = false;
           // Visible feedback — melee absorption was previously silent, making real
           // hits indistinguishable from the shield draining "on its own"
@@ -2577,7 +2692,7 @@ function physicsStep(dt, now) {
             // chance to ever cost shield energy — it almost always gets caught here,
             // well before it could reach the player's actual (much smaller) hitbox
             // in onCollision, so that path alone was never draining the shield.
-            mobileShieldEnergy = Math.max(0, mobileShieldEnergy - e.currentDamage);
+            mobileShieldEnergy = Math.max(0, mobileShieldEnergy - e.currentDamage * SHIELD_INCOMING_DAMAGE_MULT);
             shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
             if (mobileShieldEnergy <= 0) shieldActive = false;
           }
@@ -3211,6 +3326,16 @@ function saveLB(key, arr) {
   localStorage.setItem(key, JSON.stringify(arr));
 }
 
+function loadEnemyKillCount() {
+  const n = parseInt(localStorage.getItem('vd_enemy_kill_count') || '0', 10);
+  return isNaN(n) ? 0 : n;
+}
+function saveEnemyKillCount(n) {
+  localStorage.setItem('vd_enemy_kill_count', String(n));
+}
+let enemyKillCount = loadEnemyKillCount();
+document.getElementById('hKills').textContent = 'ENEMIGOS: ' + enemyKillCount;
+
 function recordRun(scoreVal, elapsedMs) {
   const name = randomName();
   const timeS = Math.round(elapsedMs / 1000);
@@ -3408,6 +3533,8 @@ app.ticker.add(() => {
     updateMissileExhaust(dt);
     updateMissileAuto(now);
     updatePowerups(now);
+    updatePowerupLevelDecay(now);
+    updatePowerupLevelsHud(now);
     updateLockReticles(now);
     updatePulses();
     updateImpulseFlashes();
@@ -3420,7 +3547,10 @@ app.ticker.add(() => {
     drawPlayerBars(now);
     drawMinimap();
     drawPowerupArrows();
-    if (player && !player.alive && !gameOver) {
+    // Redundant on purpose: energy<=0 is checked directly as a safety net alongside
+    // !alive, so the game can never keep running with the player effectively dead.
+    if (player && (!player.alive || player.energy <= 0) && !gameOver) {
+      player.alive = false;
       gameOver = true;
       // Remove player sprite immediately
       if (player.gfx) { worldContainer.removeChild(player.gfx); player.gfx.destroy(); player.gfx = null; }
@@ -3642,6 +3772,14 @@ showOverlay(false);
     minimapEl.style.width = clamped + 'px'; minimapEl.style.height = clamped + 'px';
     minimapEl.width = clamped; minimapEl.height = clamped;
   }
+  // scoreHud/massHud move up to top on mobile, freeing the bottom corners
+  const killHud = document.getElementById('killHud');
+  if (killHud) { killHud.style.bottom = '10px'; killHud.style.fontSize = '13px'; }
+  const buildHud = document.getElementById('buildHud');
+  if (buildHud) { buildHud.style.bottom = '10px'; buildHud.style.fontSize = '10px'; }
+  // #hud (below) gets hidden on mobile, freeing the top-left corner for this panel
+  const powerupLevels = document.getElementById('powerupLevels');
+  if (powerupLevels) { powerupLevels.style.top = '8px'; powerupLevels.style.fontSize = '13px'; }
   // Hide verbose weapon info on mobile (no keyboard)
   const hud = document.getElementById('hud');
   if (hud) hud.style.display = 'none';
