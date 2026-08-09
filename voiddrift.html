@@ -189,7 +189,7 @@
 // BUILD VERSION — formato YYMMDD-HHMM. Actualizar en CADA cambio que se
 // genere para este fichero (ver CLAUDE.md, sección "Build version").
 // ================================================================
-const BUILD_VERSION = "260809-2345";
+const BUILD_VERSION = "260810-0015";
 document.getElementById('hBuild').textContent = 'build ' + BUILD_VERSION;
 
 // ================================================================
@@ -2217,7 +2217,9 @@ function updatePowerups(now) {
       // Show label popup with current level
       const lvl = p.type==='S' ? shieldLevel : p.type==='M' ? missileLevel :
                   p.type==='L' ? laserLevel : p.type==='F' ? weaponSpread : -1;
-      const lvlText = POWERUP_LABELS[p.type] + (lvl > 0 ? ' ×' + (lvl+1) : '');
+      // lvl already reflects the post-pickup level (applyPowerup ran above), so it's
+      // already the correct 1-indexed multiplier — do not add another +1 here.
+      const lvlText = POWERUP_LABELS[p.type] + (lvl > 0 ? ' ×' + lvl : '');
       spawnScorePopup(p.x, p.y, 0, lvlText);
       // Remove
       worldContainer.removeChild(p.gfx);
@@ -2376,7 +2378,6 @@ function onEnemyDeath(enemy, playerKill = false) {
     score += mass * SCORE_MULTIPLIER;
     addScore(mass, enemy.x, enemy.y);
     enemyKillCount++;
-    document.getElementById('hKills').textContent = 'ENEMIGOS: ' + enemyKillCount;
     // Powerup spawning (mobile only)
     if (isMobileControlsActive) {
       killCount++;
@@ -2388,6 +2389,7 @@ function onEnemyDeath(enemy, playerKill = false) {
         }
       }
     }
+    updateKillHud();
   }
 
   // Per-type death explosion — size and count scale with enemy mass
@@ -3338,7 +3340,17 @@ function saveLB(key, arr) {
 
 // Per-run, not persisted — se pone a 0 en cada partida nueva (ver startGame()).
 let enemyKillCount = 0;
-document.getElementById('hKills').textContent = 'ENEMIGOS: ' + enemyKillCount;
+
+// El hueco hasta el siguiente powerup solo tiene sentido en móvil (ahí es donde
+// caen); en desktop se muestra solo el contador de enemigos, sin la barra.
+function updateKillHud() {
+  let text = 'ENEMIGOS: ' + enemyKillCount;
+  if (isMobileControlsActive) {
+    text += ' | ' + Math.max(0, nextPowerupAt - killCount);
+  }
+  document.getElementById('hKills').textContent = text;
+}
+updateKillHud();
 
 function recordRun(scoreVal, elapsedMs) {
   const name = randomName();
@@ -3500,6 +3512,12 @@ function clearIntroEnemies() {
 // ================================================================
 let prevTime = null;
 app.ticker.add(() => {
+  // Top-level safety net: PIXI's ticker schedules its own next call from inside the
+  // current one, so an uncaught exception anywhere in a frame can kill the loop
+  // permanently (not just skip a frame) — the game would freeze for good with no
+  // way back to the menu. Catching here guarantees the ticker always keeps ticking,
+  // and forces the game-over screen open if the player had already died that frame.
+  try {
   const now = performance.now();
   if (prevTime===null) { prevTime=now; return; }
   const dt = Math.min((now-prevTime)/16.6667, 3);
@@ -3577,6 +3595,13 @@ app.ticker.add(() => {
     }
   }
   hudUpdate(now);
+  } catch (err) {
+    console.error('Frame update failed:', err);
+    if (player && !player.alive && !gameOver) {
+      gameOver = true;
+      showOverlay(true, null);
+    }
+  }
 });
 
 window.addEventListener("resize", () => {
@@ -3709,7 +3734,6 @@ function startGame() {
   if (scoreAnimInterval) { clearInterval(scoreAnimInterval); scoreAnimInterval = null; }
   document.getElementById('hScore').textContent = '0';
   enemyKillCount = 0;
-  document.getElementById('hKills').textContent = 'ENEMIGOS: 0';
   currentPhase = 0;
   gameOver = false;
   paused = false;
@@ -3725,6 +3749,7 @@ function startGame() {
   shieldActive = false;
   shieldUsedMs = 0;
   clearPowerups();
+  updateKillHud();
   warpGridGfx.clear();
   sessionStartTime = performance.now();
   setup();  // re-creates player, walls, re-adds persistent gfx layers
