@@ -2572,6 +2572,15 @@ function physicsStep(dt, now) {
       if (e.type===TYPE.BULLET && e.isEnemyBullet) {
         const bdx=e.x-player.x, bdy=e.y-player.y;
         if (Math.sqrt(bdx*bdx+bdy*bdy) < SHIELD_RADIUS + e.halfW) {
+          if (isMobileControlsActive) {
+            // Mobile hit-based shield: this radius intercept is the bullet's ONLY
+            // chance to ever cost shield energy — it almost always gets caught here,
+            // well before it could reach the player's actual (much smaller) hitbox
+            // in onCollision, so that path alone was never draining the shield.
+            mobileShieldEnergy = Math.max(0, mobileShieldEnergy - e.currentDamage);
+            shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
+            if (mobileShieldEnergy <= 0) shieldActive = false;
+          }
           spawnFragments(e.x, e.y, e.vx, e.vy, 0x88ffff, 6);
           e.alive = false;
         }
