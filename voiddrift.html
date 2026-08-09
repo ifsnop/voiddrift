@@ -154,7 +154,6 @@
   <div class="pl-row" id="plRow-M"><span class="pl-label" style="color:#ff8833">M</span><span id="plVal-M">0</span></div>
   <div class="pl-row" id="plRow-L"><span class="pl-label" style="color:#44ffff">L</span><span id="plVal-L">0</span></div>
   <div class="pl-row" id="plRow-F"><span class="pl-label" style="color:#ffff33">F</span><span id="plVal-F">0</span></div>
-  <div class="pl-row" id="plRow-H"><span class="pl-label" style="color:#ff3366">H</span><span id="plVal-H">0</span></div>
 </div>
 <div id="phaseTimer">--</div>
 <div id="phaseLabel">FASE --</div>
@@ -189,7 +188,7 @@
 // BUILD VERSION — formato YYMMDD-HHMM. Actualizar en CADA cambio que se
 // genere para este fichero (ver CLAUDE.md, sección "Build version").
 // ================================================================
-const BUILD_VERSION = "260809-2015";
+const BUILD_VERSION = "260809-2130";
 document.getElementById('hBuild').textContent = 'build ' + BUILD_VERSION;
 
 // ================================================================
@@ -2056,8 +2055,8 @@ const MISSILE_CADENCE   = [5000, 4000, 3000, 2000, 1500, 1000, 500, 200]; // ms 
 // Cada nivel de un powerup dura POWERUP_LEVEL_DURATION_MS sin refrescarse; al agotarse
 // baja un nivel (y ese nivel arranca su propia cuenta atrás) — así hay que seguir
 // buscando powerups activamente en vez de acumular buffs para siempre.
-const POWERUP_LEVEL_DURATION_MS = 10000;
-const POWERUP_LEVEL_BLINK_MS    = 2000; // parpadea en el HUD justo antes de bajar de nivel
+const POWERUP_LEVEL_DURATION_MS = 20000;
+const POWERUP_LEVEL_BLINK_MS    = 4000; // parpadea en el HUD justo antes de bajar de nivel
 let shieldLevelExpiresAt  = 0;
 let missileLevelExpiresAt = 0;
 let laserLevelExpiresAt   = 0;
@@ -2258,6 +2257,13 @@ function updatePowerupLevelDecay(now) {
     laserLevel--;
     AUTOBEAM_RADIUS = Math.round(AUTOBEAM_BASE_RAD * (1 + laserLevel * 0.25));
     AUTOBEAM_DAMAGE = AUTOBEAM_BASE_DMG * (1 + laserLevel * 0.2);
+    if (laserLevel <= 0) {
+      // A nivel 0 la fórmula de arriba sigue dando el radio/daño BASE (no cero), y
+      // autoBeamOn nunca se apagaba solo — el jugador se quedaba con un autobeam
+      // débil pero funcional para siempre tras la primera recogida. Se apaga del todo.
+      autoBeamOn = false;
+      autoBeamTarget = null;
+    }
     laserLevelExpiresAt = laserLevel > 0 ? now + POWERUP_LEVEL_DURATION_MS : 0;
   }
   if (weaponSpread > 0 && now >= spreadLevelExpiresAt) {
@@ -2271,7 +2277,8 @@ const POWERUP_LEVEL_ROWS = [
   ['M', () => missileLevel, () => missileLevelExpiresAt],
   ['L', () => laserLevel,   () => laserLevelExpiresAt],
   ['F', () => weaponSpread, () => spreadLevelExpiresAt],
-  ['H', () => 0,            () => 0], // Vida no tiene nivel persistente — siempre 0
+  // Vida (H) no tiene nivel persistente — es una curación instantánea, no un buff
+  // que decaiga, así que no tiene fila propia en este HUD.
 ];
 
 function updatePowerupLevelsHud(now) {
