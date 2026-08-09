@@ -188,7 +188,7 @@
 // BUILD VERSION — formato YYMMDD-HHMM. Actualizar en CADA cambio que se
 // genere para este fichero (ver CLAUDE.md, sección "Build version").
 // ================================================================
-const BUILD_VERSION = "260809-2130";
+const BUILD_VERSION = "260809-2330";
 document.getElementById('hBuild').textContent = 'build ' + BUILD_VERSION;
 
 // ================================================================
@@ -668,7 +668,10 @@ function addToPool(e) {
 function purge() {
   for (let i = pool.length - 1; i >= 0; i--) {
     const e = pool[i];
-    if (!e.alive) {
+    // El jugador se excluye a propósito: su limpieza (gfx, pool, etc.) la gestiona
+    // exclusivamente el bloque de game-over en el loop principal, para que no haya
+    // dos sitios distintos destruyendo su gfx / sacándolo de pool en la misma muerte.
+    if (!e.alive && e.type !== TYPE.PLAYER) {
       if (e.gfx) { worldContainer.removeChild(e.gfx); e.gfx.destroy(); e.gfx = null; }
       if (e._ringGfx) { worldContainer.removeChild(e._ringGfx); e._ringGfx.destroy(); e._ringGfx = null; }
       pool.splice(i, 1);
@@ -2372,7 +2375,6 @@ function onEnemyDeath(enemy, playerKill = false) {
     score += mass * SCORE_MULTIPLIER;
     addScore(mass, enemy.x, enemy.y);
     enemyKillCount++;
-    saveEnemyKillCount(enemyKillCount);
     document.getElementById('hKills').textContent = 'ENEMIGOS: ' + enemyKillCount;
     // Powerup spawning (mobile only)
     if (isMobileControlsActive) {
@@ -3333,14 +3335,8 @@ function saveLB(key, arr) {
   localStorage.setItem(key, JSON.stringify(arr));
 }
 
-function loadEnemyKillCount() {
-  const n = parseInt(localStorage.getItem('vd_enemy_kill_count') || '0', 10);
-  return isNaN(n) ? 0 : n;
-}
-function saveEnemyKillCount(n) {
-  localStorage.setItem('vd_enemy_kill_count', String(n));
-}
-let enemyKillCount = loadEnemyKillCount();
+// Per-run, not persisted — se pone a 0 en cada partida nueva (ver startGame()).
+let enemyKillCount = 0;
 document.getElementById('hKills').textContent = 'ENEMIGOS: ' + enemyKillCount;
 
 function recordRun(scoreVal, elapsedMs) {
@@ -3561,9 +3557,16 @@ app.ticker.add(() => {
       gameOver = true;
       // Remove player sprite immediately
       if (player.gfx) { worldContainer.removeChild(player.gfx); player.gfx.destroy(); player.gfx = null; }
-      const lastRun = recordRun(score, performance.now() - sessionStartTime);
-      // Show big death explosion for 5s, then overlay
-      showDeathExplosion(player.x - cam.x, player.y - cam.y, () => showOverlay(true, lastRun));
+      // If anything in here throws, the game must never get stuck on a dead player
+      // with no way back to the menu — force the overlay open as a last resort.
+      try {
+        const lastRun = recordRun(score, performance.now() - sessionStartTime);
+        // Show big death explosion for 5s, then overlay
+        showDeathExplosion(player.x - cam.x, player.y - cam.y, () => showOverlay(true, lastRun));
+      } catch (err) {
+        console.error('Death sequence failed, forcing overlay:', err);
+        showOverlay(true, null);
+      }
     }
   }
   hudUpdate(now);
@@ -3698,6 +3701,8 @@ function startGame() {
   targetScore = 0;
   if (scoreAnimInterval) { clearInterval(scoreAnimInterval); scoreAnimInterval = null; }
   document.getElementById('hScore').textContent = '0';
+  enemyKillCount = 0;
+  document.getElementById('hKills').textContent = 'ENEMIGOS: 0';
   currentPhase = 0;
   gameOver = false;
   paused = false;
@@ -3728,6 +3733,13 @@ function startGame() {
 }
 
 document.getElementById('overlay').addEventListener('click', () => {
+  // Si hay una versión nueva descargada y lista, esta pulsación la aplica en vez de
+  // arrancar la partida — así nunca se interrumpe una partida en curso, y la próxima
+  // partida ya arranca con la versión al día.
+  if (pendingSwUpdate && pendingSwUpdate.waiting) {
+    pendingSwUpdate.waiting.postMessage('skipWaiting');
+    return;
+  }
   startGame();
 });
 
@@ -3736,6 +3748,45 @@ renderLB();
 // setup() called to initialize stage objects (warpGrid etc.) but game won't run
 setup();
 showOverlay(false);
+
+// ================================================================
+// SERVICE WORKER — juego jugable offline + actualizaciones sin interrumpir partidas
+// ================================================================
+let pendingSwUpdate = null; // registration con SW nuevo listo; se aplica al pulsar el overlay
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      reg.addEventListener('updatefound', () => {
+        const newWorker = reg.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener('statechange', () => {
+          // "installed" + ya había un controller = actualización real, no la primera instalación
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            pendingSwUpdate = reg;
+            const hint = document.querySelector('#overlay .click-hint');
+            if (hint) {
+              hint.textContent = isMobileControlsActive
+                ? 'Nueva versión — TOCA para actualizar'
+                : 'Nueva versión — CLICK para actualizar';
+            }
+          }
+        });
+      });
+      // Vuelve a comprobar si hay versión nueva cada vez que la pestaña vuelve a primer plano
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') reg.update().catch(() => {});
+      });
+    }).catch(() => {}); // si el registro falla (p.ej. sin HTTPS en local), el juego funciona igual
+  });
+
+  let reloadingForUpdate = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloadingForUpdate) return; // evita bucles si el evento se disparara más de una vez
+    reloadingForUpdate = true;
+    window.location.reload();
+  });
+}
 
 // ================================================================
 // MOBILE TOUCH CONTROLS (nipplejs - loaded dynamically)
@@ -3784,9 +3835,10 @@ showOverlay(false);
   if (killHud) { killHud.style.bottom = '10px'; killHud.style.fontSize = '13px'; }
   const buildHud = document.getElementById('buildHud');
   if (buildHud) { buildHud.style.bottom = '10px'; buildHud.style.fontSize = '10px'; }
-  // #hud (below) gets hidden on mobile, freeing the top-left corner for this panel
+  // #hud gets hidden on mobile, but massHud (MASA:) moves to top:6px/left:10px right
+  // above it — stack below massHud instead of on top of it (was hiding the S row).
   const powerupLevels = document.getElementById('powerupLevels');
-  if (powerupLevels) { powerupLevels.style.top = '8px'; powerupLevels.style.fontSize = '13px'; }
+  if (powerupLevels) { powerupLevels.style.top = '28px'; powerupLevels.style.fontSize = '13px'; }
   // Hide verbose weapon info on mobile (no keyboard)
   const hud = document.getElementById('hud');
   if (hud) hud.style.display = 'none';
