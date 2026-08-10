@@ -189,7 +189,7 @@
 // BUILD VERSION — formato YYMMDD-HHMM. Actualizar en CADA cambio que se
 // genere para este fichero (ver CLAUDE.md, sección "Build version").
 // ================================================================
-const BUILD_VERSION = "260810-0930";
+const BUILD_VERSION = "260810-1015";
 document.getElementById('hBuild').textContent = 'build ' + BUILD_VERSION;
 
 // ================================================================
@@ -2047,6 +2047,10 @@ function refreshShieldBar(now) {
 let killCount       = 0;
 let nextPowerupAt   = 5;     // first powerup after 5 kills
 let powerupDropCount = 0;    // how many powerups have dropped this run — freezes the gap after POWERUP_GAP_FREEZE_AFTER
+// Tras el punto de congelación, nextPowerupAt sigue avanzando por pasos fijos de este
+// tamaño (el último salto calculado por el crecimiento ×1.5) en vez de quedarse fijo.
+// Si se quedara fijo, killCount lo acabaría superando y saldría un powerup en cada kill.
+let lastPowerupGap  = 0;
 const powerups      = [];    // active powerup pickups on the field
 let missileAutoLast = 0;     // last auto-missile fire time
 
@@ -2309,6 +2313,7 @@ function clearPowerups() {
   killCount = 0;
   nextPowerupAt = 5;
   powerupDropCount = 0;
+  lastPowerupGap = 0;
   missileAutoLast = 0;
   // Reset progressive levels
   missileLevel = 0;
@@ -2385,7 +2390,14 @@ function onEnemyDeath(enemy, playerKill = false) {
         spawnPowerup(enemy.x, enemy.y);
         powerupDropCount++;
         if (powerupDropCount < POWERUP_GAP_FREEZE_AFTER) {
-          nextPowerupAt = Math.ceil(nextPowerupAt + nextPowerupAt * POWERUP_GROWTH_RATE);
+          const newNext = Math.ceil(nextPowerupAt + nextPowerupAt * POWERUP_GROWTH_RATE);
+          lastPowerupGap = newNext - nextPowerupAt;
+          nextPowerupAt = newNext;
+        } else {
+          // nextPowerupAt es un umbral absoluto de kills — si se quedara fijo aquí,
+          // killCount lo acabaría superando y saldría un powerup en cada kill.
+          // Sigue avanzando a pasos fijos del último salto calculado arriba.
+          nextPowerupAt += lastPowerupGap;
         }
       }
     }
