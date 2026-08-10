@@ -4,7 +4,7 @@
 // en CADA cambio. El navegador detecta una versión nueva comparando este fichero byte
 // a byte con el que ya tiene instalado — si CACHE_VERSION no cambia, no hay forma de
 // que se entere de que hay una actualización disponible.
-const CACHE_VERSION = '260810-0015';
+const CACHE_VERSION = '260810-0930';
 const CACHE_NAME = 'voidrift-' + CACHE_VERSION;
 
 const CORE_ASSETS = [

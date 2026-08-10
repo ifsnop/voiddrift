@@ -189,7 +189,7 @@
 // BUILD VERSION — formato YYMMDD-HHMM. Actualizar en CADA cambio que se
 // genere para este fichero (ver CLAUDE.md, sección "Build version").
 // ================================================================
-const BUILD_VERSION = "260810-0015";
+const BUILD_VERSION = "260810-0930";
 document.getElementById('hBuild').textContent = 'build ' + BUILD_VERSION;
 
 // ================================================================
@@ -2075,7 +2075,7 @@ const POWERUP_COLORS = { S: 0x4488ff, M: 0xff8833, L: 0x44ffff, F: 0xffff33, H: 
 const POWERUP_LABELS = { S: 'ESCUDO', M: 'MISILES', L: 'LÁSER', F: 'POTENCIA', H: 'VIDA' };
 const POWERUP_PICKUP_RADIUS = 35;
 const POWERUP_GROWTH_RATE = 0.5;      // ritmo original: cada powerup exige ×1.5 kills que el anterior
-const POWERUP_GAP_FREEZE_AFTER = 10;  // a partir del 10º powerup, el hueco deja de crecer y se queda fijo
+const POWERUP_GAP_FREEZE_AFTER = 5;  // a partir del 5º powerup, el hueco deja de crecer y se queda fijo (antes: 10 → tope de 210 kills, demasiado poco frecuente)
 const POWERUP_SPAWN_WEIGHTS = { S: 1, M: 1, L: 1, F: 1, H: 2 }; // Vida cae más a menudo que el resto
 const POWERUP_MAX_ON_FIELD = 10; // tope de powerups vivos en el mapa a la vez
 const POWERUP_LIFETIME_MS = 20000; // caducan si no se recogen — hay que ir a buscarlos
@@ -3346,7 +3346,9 @@ let enemyKillCount = 0;
 function updateKillHud() {
   let text = 'ENEMIGOS: ' + enemyKillCount;
   if (isMobileControlsActive) {
-    text += ' | ' + Math.max(0, nextPowerupAt - killCount);
+    // Umbral absoluto de kills al que hay que llegar para el próximo powerup
+    // (no cuántos faltan) — p.ej. "12 | 17".
+    text += ' | ' + nextPowerupAt;
   }
   document.getElementById('hKills').textContent = text;
 }
