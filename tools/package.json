@@ -1,0 +1,11 @@
+{
+  "name": "voiddrift-tools",
+  "private": true,
+  "description": "Herramientas de desarrollo de VOIDRIFT (no forman parte del juego)",
+  "scripts": {
+    "balance": "node balance-bot.js"
+  },
+  "devDependencies": {
+    "playwright": "1.49.0"
+  }
+}

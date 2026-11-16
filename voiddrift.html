@@ -189,7 +189,7 @@
 // BUILD VERSION — formato YYMMDD-HHMM. Actualizar en CADA cambio que se
 // genere para este fichero (ver CLAUDE.md, sección "Build version").
 // ================================================================
-const BUILD_VERSION = "260810-1015";
+const BUILD_VERSION = "261116-0040";
 document.getElementById('hBuild').textContent = 'build ' + BUILD_VERSION;
 
 // ================================================================
@@ -203,22 +203,37 @@ const PHASE_DURATION = {           // override por fase (0 = usa default)
   6: 10000,                        // fase 6 dura sólo 10s antes de pasar a la 7
 };
 const TOTAL_PHASES         = 7;
-const PHASE7_DELAY_MS      = 0;     // sin espera — spawn inmediato al inicio de fase 7
+const PHASE7_DELAY_MS      = 6000;  // respiro al entrar en fase 7: sin spawns, y cae un powerup garantizado
 const PHASE7_REPEAT_THRESHOLD = 30; // si quedan ≤ N enemigos vivos, se repite la oleada
 const PHASE7_CORNERS       = 10;    // spawners por esquina
 const PHASE7_SPAWN_INTERVAL = 500;  // ms entre cada spawner
 const PHASE7_CORNER_MARGIN  = 60;   // distancia de la esquina al centro del spawner
 
 // Enemigos que se AÑADEN al inicio de cada fase (los anteriores permanecen)
+// (rebajado tras medir con tools/balance-bot.js: los enemigos se acumulan entre fases)
 const PHASE_ADD_ENEMIES = {
-  1: { enemy_heavy: 5 },
-  2: { enemy_heavy: 5, enemy_boss: 1 },
-  3: { enemy_heavy: 5, enemy_boss: 1, enemy_spawner: 1 },
-  4: { enemy_spawner: 2, enemy_follower: 5 },
-  5: { enemy_hitter: 4 },
-  6: { enemy_blackhole: 1 },
+  1: { enemy_heavy: 4 },
+  2: { enemy_heavy: 3, enemy_boss: 1 },
+  3: { enemy_heavy: 3, enemy_spawner: 1 },
+  4: { enemy_spawner: 1, enemy_follower: 4 },
+  5: { enemy_hitter: 3 },
+  6: { enemy_blackhole: 1 },  // se retira al empezar la fase 7 (retireBlackholes)
   7: {},  // spawners de esquina gestionados por phase7Update
 };
+
+// --- TOPE DE ENEMIGOS VIVOS ---
+// Carga máxima de enemigos vivos a la vez. Todo spawn pasa por aquí: los de fase esperan
+// en cola si no caben; los que nacen de muertes/spawners se descartan si no caben.
+const ENEMY_MAX_ALIVE        = 35;
+const SPAWN_QUEUE_MAX        = 20;    // tope de la cola de spawns pendientes
+const SPAWN_QUEUE_INTERVAL_MS = 400;  // ritmo al que se vacía la cola cuando hay hueco
+const SERPENT_CAP_WEIGHT     = 3;     // una serpiente entera cuenta como 3 enemigos
+// En fase 7 el tope crece con el tiempo: la fase sigue siendo infinita pero acaba apretando
+const ENEMY_MAX_ALIVE_P7      = 50;    // tope máximo en fase 7…
+const ENEMY_CAP_GROWTH_MS     = 15000; // …+1 enemigo cada este tiempo desde que empieza
+// Enemigos liberados al morir (antes: jefe 4, spawner 3)
+const HEAVY_DEATH_RELEASE    = 2;     // básicos al morir un pesado
+const BOSS_DEATH_RELEASE     = 2;     // pesados al morir un jefe
 
 // --- BULLETS: desvanecimiento con distancia ---
 // Las balas recorren MAX_BULLET_TRAVEL antes de desaparecer por completo.
@@ -233,7 +248,7 @@ const BULLET_MIN_MASS_FRAC    = 0.1;
 // --- SPAWNER ---
 const SPAWNER_SPAWN_INTERVAL_MS = 20000;
 const SPAWNER_SPAWN_VARIANT     = "enemy_heavy";
-const SPAWNER_DEATH_RELEASE     = 3;
+const SPAWNER_DEATH_RELEASE     = 2;
 const SPAWNER_PULSE_RADIUS      = 110;   // radio máximo de la onda expansiva
 const SPAWNER_PULSE_DURATION    = 600;   // ms de duración de la onda
 const SPAWNER_PULSE_COUNT       = 3;     // ondas concéntricas por evento
@@ -249,6 +264,8 @@ let HITTER_BULLET_SPEED       = 5;
 const HITTER_BULLET_DAMAGE      = 3;  // era 2 — apenas se notaba al recibir un impacto
 const HITTER_DRIFT_DELAY_MS     = 6000;  // tras este tiempo empieza a acercarse, no solo dispara y retrocede
 const HITTER_DRIFT_ACCEL        = 0.02;
+const HITTER_TELEGRAPH_MS       = 450;   // aviso visual (línea de mira) antes de cada disparo
+const HITTER_FIRST_SHOT_MS      = 1500;  // primer disparo tras aparecer (antes: inmediato, sin aviso)
 
 // --- BLACKHOLE ---
 let BLACKHOLE_BASE_RADIUS     = 520;   // radio ampliado
@@ -259,6 +276,8 @@ const BLACKHOLE_ESCAPE_FRAC     = 0.15;  // solo el 15% interior es zona de no-e
 const BLACKHOLE_DRIFT_ACCEL     = 0.018; // aceleración de deriva lenta (sin centro fijo)
 let BLACKHOLE_SIZE            = 28;    // hitbox (cuadrado)
 const BLACKHOLE_ORBIT_SPEED     = 0.18;  // rad/s para órbita mutua entre 2 blackholes
+const BLACKHOLE_CORE_DAMAGE     = 5;     // daño al jugador que toca el núcleo (antes: absorción = muerte)
+const BLACKHOLE_EJECT_SPEED     = 9;     // y lo expulsa con esta velocidad
 
 // --- SERPENT ---
 const SERPENT_SEGMENTS   = 7;
@@ -289,7 +308,8 @@ const ENERGY = {
 // --- DAÑO de enemigos al contacto ---
 const ENEMY_DAMAGE = {
   enemy_basic:1, enemy_heavy:2, enemy_boss:5,
-  enemy_spawner:1, enemy_follower:3, enemy_hitter:2, enemy_blackhole:999,
+  enemy_spawner:1, enemy_follower:3, enemy_hitter:2,
+  enemy_blackhole:4,  // era 999 (muerte instantánea); la gravedad ya castiga quedarse cerca
   enemy_serpent: 1,
 };
 
@@ -321,6 +341,89 @@ const FRAG_SPEED_MIN   = 3.0;
 const FRAG_SPEED_MAX   = 11.0;
 let FRAG_SIZE_MIN    = 3.0;
 let FRAG_SIZE_MAX    = 9.0;
+
+// --- DIRECTOR DE POWERUPS (solo móvil) ---
+// "Presión" 0..1 = enemigos cerca + balas enemigas cerca + vida perdida. Decide qué
+// powerup cae, cada cuánto, dónde aparece y si los niveles caducan.
+const PRESSURE_ENEMY_RADIUS  = 260;   // px de mundo alrededor del jugador
+const PRESSURE_ENEMY_FULL    = 10;    // enemigos cerca para presión máxima de ese término
+const PRESSURE_BULLET_RADIUS = 180;
+const PRESSURE_BULLET_FULL   = 4;
+// Pesos de la presión (suman 1): cercanía, balas, vida perdida, enemigos en el mapa
+const PRESSURE_W = { near: 0.3, bullets: 0.2, hp: 0.3, crowd: 0.2 };
+const POWERUP_H_MAX_HP_FRAC  = 0.85;  // con más vida que esto, VIDA no cae
+const POWERUP_CROWD_FULL     = 30;    // enemigos vivos para máximo peso de armas (F/M/L)
+const POWERUP_STACK_BONUS    = 0.4;   // peso extra a tipos ya activos → permite subir de nivel
+const POWERUP_POWER_SLOWDOWN = 8;     // drops más espaciados cuanto más poder: intervalo × (1 + niveles/esto)
+const POWERUP_TIME_INTERVAL_MS     = 22000; // drop por tiempo en calma (si no ha caído otro)
+const POWERUP_TIME_INTERVAL_MIN_MS = 9000;  // … con presión máxima
+const POWERUP_RESCUE_HP_FRAC       = 0.35;  // vida baja → VIDA de rescate junto al jugador
+const POWERUP_RESCUE_COOLDOWN_MS   = 20000;
+const POWERUP_NEAR_PRESSURE  = 0.45;  // con presión ≥ esto, el drop aparece cerca del jugador
+const POWERUP_NEAR_DIST      = [70, 140];   // rango de distancia "cerca"
+const POWERUP_FAR_DIST       = [220, 380];  // drops por tiempo en calma: hay que ir a por ellos
+const POWERUP_MAGNET_RADIUS  = 120;   // atracción hacia el jugador
+const POWERUP_MAGNET_SPEED   = 6;
+const POWERUP_DECAY_MIN_PRESSURE = 0.2;   // por debajo, los niveles no caducan (calma)
+const PLAYER_MAX_HP_CAP      = 20;    // VIDA con la vida llena sube la vida máxima…
+const H_OVERHEAL_MAXHP       = 2;     // …en este tanto
+const LOW_HP_WARN_FRAC       = 0.35;  // borde rojo pulsante por debajo de esta vida
+
+// --- EFECTOS VISUALES DE DISPARO (solo gráficos, no afectan a la física) ---
+// Estelas: nº de posiciones de historial guardadas por bala (más = estela más larga)
+const BULLET_TRAIL_LEN   = { normal:8, heavy:12, laser:14, enemy:6 };
+// Anchura máxima de la estela (en la cabeza; se afila hacia la cola)
+let   BULLET_TRAIL_WIDTH = { normal:4, heavy:12, laser:3, enemy:5 };
+const BULLET_TRAIL_ALPHA = 0.55;   // opacidad máxima de la estela de color
+const BULLET_TRAIL_GHOST_MS = 120; // la estela sigue visible y se encoge tras el impacto
+// Proyectil: halo aditivo alrededor de la bala (multiplicador sobre su tamaño)
+const BULLET_GLOW_SCALE  = 2.4;
+// Fogonazo del cañón
+const MUZZLE_FLASH_MS    = 70;
+let   MUZZLE_FLASH_SIZE  = 10;     // longitud base del cono (heavy ×1.8)
+// Impactos: chispas lineales + destello + anillo
+const IMPACT_SPARK_COUNT = 6;
+const IMPACT_SPARK_MS    = 160;
+const IMPACT_RING_MS     = 180;
+let   IMPACT_SPARK_SPEED = 7;
+let   IMPACT_RING_RADIUS = 16;
+const IMPACT_MAX_SPARKS  = 400;    // tope de chispas vivas (protege el rendimiento)
+const IMPACT_SCALE       = { normal:1, heavy:1.7, laser:0.8, enemy:1 };  // tamaño del impacto por arma
+// Temblor de pantalla (modelo "trauma": offset ∝ trauma²)
+const SHAKE_INTENSITY    = 1;      // 0 = desactivado
+let   SHAKE_MAX_PX       = 10;
+const SHAKE_DECAY        = 1.8;    // trauma perdido por segundo
+const SHAKE_HEAVY_SHOT   = 0.25;   // retroceso sutil del arma pesada
+const SHAKE_KILL_BASE    = 0.15;   // × √masa del enemigo…
+const SHAKE_KILL_MAX     = 0.75;   // …con este tope (blackhole/spawner)
+const SHAKE_PLAYER_HIT   = 0.6;
+const SHAKE_MISSILE_HIT  = 0.3;
+
+// --- PROFUNDIDAD Y BRILLO DE ENTIDADES (solo gráficos) ---
+// Luz global desde arriba-izquierda: biseles/facetas claros arriba-izq., sombras abajo-der.
+const ENEMY_GLOW_ALPHA      = 0.14;   // halo aditivo bajo cada enemigo
+const ENEMY_GLOW_SCALE      = 2.2;    // radio del halo exterior (× radio del enemigo)
+const ENEMY_TRAIL_LEN       = 10;     // puntos de historial de la estela de movimiento
+const ENEMY_TRAIL_MIN_SPEED = 1.2;    // por debajo de esta velocidad no hay estela
+const ENEMY_TRAIL_ALPHA     = 0.35;
+const ENEMY_HIT_FLASH_MS    = 110;    // destello blanco + "golpe" de escala al recibir daño
+const ENEMY_HIT_PUNCH       = 0.22;   // aumento de escala momentáneo al ser golpeado
+let   SHADOW_OFFSET         = 6;      // desplazamiento de la sombra proyectada (px)
+const SHADOW_ALPHA          = 0.35;
+const DEATH_FLARE_MS        = 420;    // destello de lente al morir un enemigo
+const DEATH_FLARE_MAX       = 30;     // tope de destellos simultáneos
+// Fantasmas de lente: [posición sobre el eje destello→centro de pantalla, radio rel., alpha]
+const LENS_GHOSTS = [[0.45, 0.5, 0.12], [0.8, 0.25, 0.16], [1.3, 0.9, 0.07]];
+// Fondo: capas de estrellas con parallax (más cerca = más grande, más brillante, más rápida)
+const BG_COLOR   = 0x07090f;
+const STAR_TILE  = 1024;
+const STAR_LAYERS = [
+  { count:260, size:0.8, alpha:0.45, parallax:0.06, drift:0.004, nebula:true },
+  { count:90,  size:1.3, alpha:0.65, parallax:0.18, drift:0.009 },
+  { count:30,  size:2.0, alpha:0.95, parallax:0.38, drift:0.016 },
+];
+const NEBULA_COUNT   = 3;             // manchas de nebulosa lejanas (0 = ninguna; son lo más caro del fondo)
+const VIGNETTE_ALPHA = 0.55;          // oscurecimiento en los bordes de pantalla (CSS)
 
 // --- EXHAUST ---
 const EXHAUST_DURATION = 420;
@@ -409,7 +512,7 @@ const COLOR = {
 PIXI.BaseTexture.defaultOptions.scaleMode = PIXI.SCALE_MODES.NEAREST;
 const app = new PIXI.Application({
   width: window.innerWidth, height: window.innerHeight,
-  backgroundColor: 0x111111,
+  backgroundColor: BG_COLOR,
   resolution: window.devicePixelRatio || 1,
   autoDensity: true,
 });
@@ -457,6 +560,13 @@ if (_isTouchDevice) {
   FRAG_SIZE_MAX    *= MS;
   BLACKHOLE_BASE_RADIUS *= MS;
   AUTOBEAM_RADIUS  = Math.round(AUTOBEAM_RADIUS * MS);
+  // Efectos visuales de disparo
+  for (const k in BULLET_TRAIL_WIDTH) BULLET_TRAIL_WIDTH[k] *= Math.max(MS, 0.7);  // estelas algo más gruesas que la escala general para que se lean en pantalla pequeña
+  MUZZLE_FLASH_SIZE  *= MS;
+  IMPACT_SPARK_SPEED *= MS;
+  IMPACT_RING_RADIUS *= MS;
+  SHAKE_MAX_PX       *= 0.7;  // pantalla más pequeña: temblor algo más suave
+  SHADOW_OFFSET      *= MS;
 
   // --- Wall scaling ---
   WALL_MIN_SHORT = Math.round(WALL_MIN_SHORT * MS);
@@ -551,34 +661,75 @@ function makeEntity(type, variant, x, y, w, h, vx, vy, mass, color) {
 // ================================================================
 const pool = [];
 
+// --- Sombreado pseudo-3D ---
+// Luz global desde arriba-izquierda (coordenadas de pantalla)
+const LIGHT_X = -0.7071, LIGHT_Y = -0.7071;
+// f > 0 aclara hacia blanco, f < 0 oscurece hacia negro
+function shadeColor(c, f) {
+  let r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+  if (f >= 0) { r += (255 - r) * f; g += (255 - g) * f; b += (255 - b) * f; }
+  else        { r *= 1 + f; g *= 1 + f; b *= 1 + f; }
+  return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
+}
+// Bloque biselado: 4 biseles iluminados según la luz + cara superior con leve degradado
+function drawBevelRect(g, x, y, w, h, col, b) {
+  g.beginFill(shadeColor(col, -0.1)); g.drawRect(x, y, w, h); g.endFill();
+  g.beginFill(shadeColor(col, 0.5));  g.drawPolygon([x,y, x+w,y, x+w-b,y+b, x+b,y+b]); g.endFill();
+  g.beginFill(shadeColor(col, 0.25)); g.drawPolygon([x,y, x+b,y+b, x+b,y+h-b, x,y+h]); g.endFill();
+  g.beginFill(shadeColor(col, -0.4)); g.drawPolygon([x+w,y, x+w,y+h, x+w-b,y+h-b, x+w-b,y+b]); g.endFill();
+  g.beginFill(shadeColor(col, -0.6)); g.drawPolygon([x,y+h, x+b,y+h-b, x+w-b,y+h-b, x+w,y+h]); g.endFill();
+  g.beginFill(shadeColor(col, 0.18), 0.6); g.drawRect(x+b, y+b, w-2*b, (h-2*b)*0.45); g.endFill();
+}
+// Polígono facetado (pirámide/gema vista desde arriba): un triángulo por arista hacia
+// el centro, más claro cuanto más mira hacia la luz
+function drawFacetedPolygon(g, pts, cx, cy, col, depth) {
+  const n = pts.length >> 1;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = pts[i*2], ay = pts[i*2+1], bx = pts[j*2], by = pts[j*2+1];
+    const mx = (ax + bx) * 0.5 - cx, my = (ay + by) * 0.5 - cy;
+    const lit = (mx * LIGHT_X + my * LIGHT_Y) / (Math.hypot(mx, my) || 1);  // -1..1
+    g.beginFill(shadeColor(col, lit * depth));
+    g.drawPolygon([ax,ay, bx,by, cx,cy]);
+    g.endFill();
+  }
+}
+
 function buildEnemyGfx(e) {
   const g = new PIXI.Graphics();
+  const bev = Math.max(1, Math.round(Math.min(e.w, e.h) * 0.18));
   if (e.variant === 'enemy_spawner') {
-    g.beginFill(e.color);
+    // Gema hexagonal facetada + núcleo brillante con reflejo
     const hw = e.halfW, hh = e.halfH;
-    g.drawPolygon([hw,0, e.w,hh*0.5, e.w,hh*1.5, hw,e.h, 0,hh*1.5, 0,hh*0.5]);
-    g.endFill();
-    g.beginFill(0xdd88ff, 0.8);
+    drawFacetedPolygon(g, [hw,0, e.w,hh*0.5, e.w,hh*1.5, hw,e.h, 0,hh*1.5, 0,hh*0.5], hw, hh, e.color, 0.55);
+    g.beginFill(0xdd88ff, 0.85);
     g.drawCircle(hw, hh, hw * 0.42);
     g.endFill();
-    g.lineStyle(3, 0xee66ff, 1);
+    g.beginFill(0xffffff, 0.6);
+    g.drawCircle(hw - hw*0.13, hh - hh*0.13, hw * 0.16);
+    g.endFill();
+    g.lineStyle(Math.max(1.5, 3 * MS), 0xee66ff, 0.9);
     g.drawCircle(hw, hh, hw - 2);
   } else if (e.variant === 'enemy_follower') {
-    g.beginFill(e.color);
+    // Pirámide de 4 caras vista desde arriba + vértice brillante
     const hw = e.halfW, hh = e.halfH;
+    drawFacetedPolygon(g, [hw,0, e.w,hh, hw,e.h, 0,hh], hw, hh, e.color, 0.6);
+    g.lineStyle(1, 0xaaffcc, 0.7);
     g.drawPolygon([hw,0, e.w,hh, hw,e.h, 0,hh]);
+    g.lineStyle(0);
+    g.beginFill(0xffffff, 0.85);
+    g.drawCircle(hw, hh, Math.max(1, hw * 0.15));
     g.endFill();
-    g.lineStyle(2, 0xaaffcc, 0.9);
-    g.drawPolygon([hw,3, e.w-3,hh, hw,e.h-3, 3,hh]);
   } else if (e.variant === 'enemy_hitter') {
-    g.beginFill(e.color);
-    g.drawRect(0, 0, e.w, e.h);
-    g.endFill();
+    drawBevelRect(g, 0, 0, e.w, e.h, e.color, bev);
     g.beginFill(0xffaaaa, 0.9);
-    g.drawRect(e.halfW-2, 2, 4, e.h-4);
-    g.drawRect(2, e.halfH-2, e.w-4, 4);
+    g.drawRect(e.halfW-2*MS, 2*MS, 4*MS, e.h-4*MS);
+    g.drawRect(2*MS, e.halfH-2*MS, e.w-4*MS, 4*MS);
     g.endFill();
-    g.lineStyle(2, 0xff0000, 0.8);
+    g.beginFill(0xffffff, 0.8);
+    g.drawCircle(e.halfW, e.halfH, Math.max(1, e.halfW * 0.18));
+    g.endFill();
+    g.lineStyle(Math.max(1, 2 * MS), 0xff0000, 0.8);
     g.drawCircle(e.halfW, e.halfH, e.halfW - 2);
   } else if (e.variant === 'enemy_blackhole') {
     // Agujero negro: disco de acreción + horizonte de eventos
@@ -610,16 +761,69 @@ function buildEnemyGfx(e) {
     g.drawCircle(cx, cy, r * 0.38);
     g.endFill();
   } else {
-    g.beginFill(e.color);
-    g.drawRect(0, 0, e.w, e.h);
+    // basic / heavy / boss: bloque biselado con reflejo especular
+    drawBevelRect(g, 0, 0, e.w, e.h, e.color, bev);
+    g.beginFill(0xffffff, 0.45);
+    g.drawEllipse(e.w * 0.32, e.h * 0.3, e.w * 0.14, e.h * 0.08);
     g.endFill();
+    if (e.variant === 'enemy_boss') {
+      // Núcleo incrustado brillante
+      g.beginFill(shadeColor(e.color, -0.6));
+      g.drawRect(e.w * 0.3, e.h * 0.3, e.w * 0.4, e.h * 0.4);
+      g.endFill();
+      g.beginFill(0xffdddd, 0.9);
+      g.drawCircle(e.halfW, e.halfH, e.w * 0.12);
+      g.endFill();
+    }
   }
+  return g;
+}
+
+// Proyectiles: forma alargada sobre el eje X (se rota según la velocidad en syncGraphics)
+// con halo aditivo. La geometría se cachea por variante+tamaño y se comparte entre todas
+// las balas iguales — crear una bala solo instancia un Graphics ligero sobre esa geometría.
+// La hitbox (w/h) no cambia: esto es solo visual.
+const bulletGeomCache = new Map();
+function buildBulletGfx(e) {
+  const key = e.variant + ':' + e.w;
+  let tpl = bulletGeomCache.get(key);
+  if (!tpl) {
+    tpl = new PIXI.Graphics();
+    const cx = e.halfW, cy = e.halfH, s = e.w, G = BULLET_GLOW_SCALE;
+    if (e.variant === 'bullet_heavy') {
+      // Bola de plasma: doble halo + núcleo blanco
+      tpl.beginFill(e.color, 0.16); tpl.drawCircle(cx, cy, s * G * 0.5); tpl.endFill();
+      tpl.beginFill(e.color, 0.35); tpl.drawEllipse(cx, cy, s * 0.85, s * 0.7); tpl.endFill();
+      tpl.beginFill(e.color, 1);    tpl.drawEllipse(cx, cy, s * 0.6, s * 0.5); tpl.endFill();
+      tpl.beginFill(0xffffff, 0.9); tpl.drawEllipse(cx, cy, s * 0.34, s * 0.26); tpl.endFill();
+    } else if (e.variant === 'bullet_laser') {
+      // Aguja de energía muy alargada
+      tpl.beginFill(e.color, 0.2);  tpl.drawEllipse(cx, cy, s * G * 1.3, s * 0.95); tpl.endFill();
+      tpl.beginFill(e.color, 1);    tpl.drawEllipse(cx, cy, s * 2.4, s * 0.42); tpl.endFill();
+      tpl.beginFill(0xffffff, 0.95);tpl.drawEllipse(cx, cy, s * 1.9, s * 0.18); tpl.endFill();
+    } else if (e.variant === 'bullet_enemy') {
+      // Orbe hostil rojo
+      tpl.beginFill(e.color, 0.22); tpl.drawCircle(cx, cy, s * G * 0.45); tpl.endFill();
+      tpl.beginFill(e.color, 1);    tpl.drawEllipse(cx, cy, s * 0.62, s * 0.5); tpl.endFill();
+      tpl.beginFill(0xffd0d0, 0.9); tpl.drawEllipse(cx, cy, s * 0.3, s * 0.22); tpl.endFill();
+    } else {
+      // Trazador normal
+      tpl.beginFill(e.color, 0.2);  tpl.drawEllipse(cx, cy, s * G * 0.75, s * G * 0.38); tpl.endFill();
+      tpl.beginFill(e.color, 1);    tpl.drawEllipse(cx, cy, s * 1.1, s * 0.45); tpl.endFill();
+      tpl.beginFill(0xffffff, 0.9); tpl.drawEllipse(cx, cy, s * 0.7, s * 0.2); tpl.endFill();
+    }
+    bulletGeomCache.set(key, tpl);
+  }
+  const g = new PIXI.Graphics(tpl.geometry);
+  g.blendMode = PIXI.BLEND_MODES.ADD;
   return g;
 }
 
 function addToPool(e) {
   let g;
-  if (e.type === TYPE.ENEMY) {
+  if (e.type === TYPE.BULLET) {
+    g = buildBulletGfx(e);
+  } else if (e.type === TYPE.ENEMY) {
     g = buildEnemyGfx(e);
   } else if (e.type === TYPE.PLAYER) {
     g = new PIXI.Graphics();
@@ -652,6 +856,9 @@ function addToPool(e) {
     g.lineStyle(1, 0xaaffee, 0.55);
     g.moveTo(pw*0.5, 3);
     g.lineTo(pw*0.5, ph - 4);
+  } else if (e.type === TYPE.WALL) {
+    g = new PIXI.Graphics();
+    drawBevelRect(g, 0, 0, e.w, e.h, e.color, Math.max(1, Math.round(Math.min(e.w, e.h) * 0.22)));
   } else {
     g = new PIXI.Graphics();
     g.beginFill(e.color);
@@ -673,6 +880,8 @@ function purge() {
     // exclusivamente el bloque de game-over en el loop principal, para que no haya
     // dos sitios distintos destruyendo su gfx / sacándolo de pool en la misma muerte.
     if (!e.alive && e.type !== TYPE.PLAYER) {
+      // La estela de una bala muerta pasa a "fantasma" y se encoge en vez de cortarse
+      if (e._trail) { spawnGhostTrail(e); e._trail = null; }
       if (e.gfx) { worldContainer.removeChild(e.gfx); e.gfx.destroy(); e.gfx = null; }
       if (e._ringGfx) { worldContainer.removeChild(e._ringGfx); e._ringGfx.destroy(); e._ringGfx = null; }
       pool.splice(i, 1);
@@ -690,8 +899,45 @@ function spawnWall(x, y, w, h) {
   return addToPool(makeEntity(TYPE.WALL,"wall",x,y,w,h,0,0,Infinity,COLOR.wall));
 }
 
-function spawnEnemy(variant, x, y) {
+// Tope actual de enemigos vivos (crece durante la fase 7)
+let phase7StartAt = 0;
+function enemyCap() {
+  if (currentPhase !== 7 || !phase7StartAt) return ENEMY_MAX_ALIVE;
+  const grown = ENEMY_MAX_ALIVE + Math.floor((performance.now() - phase7StartAt) / ENEMY_CAP_GROWTH_MS);
+  return Math.min(ENEMY_MAX_ALIVE_P7, grown);
+}
+
+// Carga de enemigos vivos (una serpiente entera cuenta SERPENT_CAP_WEIGHT)
+function enemyLoad() {
+  let n = 0;
+  for (let i = 0; i < pool.length; i++) {
+    const e = pool[i];
+    if (e.alive && e.type === TYPE.ENEMY) n += e._isSerpentSeg ? SERPENT_CAP_WEIGHT / SERPENT_SEGMENTS : 1;
+  }
+  return n;
+}
+
+// Spawns de fase que no cupieron bajo ENEMY_MAX_ALIVE; salen poco a poco (processSpawnQueue)
+const spawnQueue = [];
+let nextQueueSpawnAt = 0;
+function processSpawnQueue(now) {
+  if (!spawnQueue.length || now < nextQueueSpawnAt) return;
+  if (enemyLoad() >= enemyCap()) return;
+  const q = spawnQueue.shift();
+  spawnEnemy(q.variant, q.x, q.y);
+  nextQueueSpawnAt = now + SPAWN_QUEUE_INTERVAL_MS;
+}
+
+// overflow: qué hacer si se ha alcanzado ENEMY_MAX_ALIVE
+//   undefined → spawnea igualmente (teclas debug, llamadas ya filtradas)
+//   'queue'   → espera en spawnQueue (enemigos de fase)
+//   'drop'    → se descarta (liberados al morir, crías de spawner)
+function spawnEnemy(variant, x, y, overflow) {
   if (!variant) variant = 'enemy_basic';
+  if (overflow && enemyLoad() >= enemyCap()) {
+    if (overflow === 'queue' && spawnQueue.length < SPAWN_QUEUE_MAX) spawnQueue.push({ variant, x, y });
+    return null;
+  }
   const [ew, eh] = ENEMY_SIZE[variant] ?? [12, 12];
   const col = ENEMY_COLOR[variant] ?? 0x888888;
   let sx, sy;
@@ -747,6 +993,9 @@ function spawnBullet(x, y, vx, vy, btype, isEnemyBullet) {
   e.baseDamage = baseDamage;
   e.currentDamage = baseDamage;
   e.baseMass = mass;
+  e._btype = btype;    // 'normal' | 'heavy' | 'laser' | 'enemy' — estilo de estela/fogonazo
+  e._trail = [x, y];   // historial plano [x0,y0,x1,y1,...]; empieza en el cañón
+  spawnMuzzleFlash(x, y, Math.atan2(vy, vx), col, btype, !isEnemyBullet);
   return addToPool(e);
 }
 
@@ -792,6 +1041,534 @@ function updateBulletFade() {
       if (e.gfx) e.gfx.alpha = 1;
     }
   }
+}
+
+// ================================================================
+// EFECTOS DE DISPARO — estelas, fogonazo, impactos, temblor de pantalla
+// ================================================================
+// Cada tipo de efecto dibuja en UN solo Graphics compartido (blend aditivo) que se borra
+// y redibuja cada frame. No se crea un Graphics por partícula, así que escala bien con
+// el láser (80 ms × hasta 8 balas). Nada de esto toca la física.
+const bulletTrailGfx = new PIXI.Graphics();
+const muzzleGfx      = new PIXI.Graphics();
+const impactGfx      = new PIXI.Graphics();
+bulletTrailGfx.blendMode = PIXI.BLEND_MODES.ADD;
+muzzleGfx.blendMode      = PIXI.BLEND_MODES.ADD;
+impactGfx.blendMode      = PIXI.BLEND_MODES.ADD;
+
+const ghostTrails   = [];  // estelas de balas ya muertas, encogiéndose
+const muzzleFlashes = [];
+const sparks        = [];
+const impactRings   = [];
+
+// --- Estelas ---
+// pts: historial plano [x0,y0,x1,y1,...] de cola (0) a cabeza (último).
+// start: índice (par) del primer punto a dibujar. La estela se afila y se apaga hacia la cola.
+function drawTrail(g, pts, start, col, w, alphaMul, baseAlpha = BULLET_TRAIL_ALPHA, core = true) {
+  const n = (pts.length - start) >> 1;
+  if (n < 2 || alphaMul <= 0.01) return;
+  const last = n - 1;
+  // Pasada 1: estela de color
+  for (let i = 1; i <= last; i++) {
+    const k = i / last;                       // 0 en la cola → 1 en la cabeza
+    const j = start + i * 2;
+    g.lineStyle(Math.max(0.5, w * k), col, baseAlpha * k * Math.sqrt(k) * alphaMul);
+    g.moveTo(pts[j - 2], pts[j - 1]);
+    g.lineTo(pts[j], pts[j + 1]);
+  }
+  if (!core) return;
+  // Pasada 2: núcleo blanco caliente en la mitad delantera
+  for (let i = Math.max(1, last >> 1); i <= last; i++) {
+    const k = i / last;
+    const j = start + i * 2;
+    g.lineStyle(Math.max(0.5, w * 0.35 * k), 0xffffff, 0.6 * k * alphaMul);
+    g.moveTo(pts[j - 2], pts[j - 1]);
+    g.lineTo(pts[j], pts[j + 1]);
+  }
+}
+
+function spawnGhostTrail(e) {
+  if (e._trail.length < 4) return;
+  ghostTrails.push({
+    pts: e._trail, col: e.color,
+    w: BULLET_TRAIL_WIDTH[e._btype] ?? 4,
+    alpha: e.gfx ? e.gfx.alpha : 1,
+    life: BULLET_TRAIL_GHOST_MS, maxLife: BULLET_TRAIL_GHOST_MS,
+  });
+}
+
+function updateBulletTrails() {
+  const g = bulletTrailGfx;
+  g.clear();
+  for (let i = 0; i < pool.length; i++) {
+    const e = pool[i];
+    if (!e.alive || e.type !== TYPE.BULLET || !e._trail) continue;
+    const t = e._trail;
+    t.push(e.x, e.y);
+    const maxLen = (BULLET_TRAIL_LEN[e._btype] ?? 8) * 2;
+    if (t.length > maxLen) t.splice(0, t.length - maxLen);
+    drawTrail(g, t, 0, e.color, BULLET_TRAIL_WIDTH[e._btype] ?? 4, e.gfx ? e.gfx.alpha : 1);
+  }
+  // Estelas fantasma: se recortan desde la cola hasta desaparecer en el punto de impacto
+  for (let i = ghostTrails.length - 1; i >= 0; i--) {
+    const gt = ghostTrails[i];
+    gt.life -= app.ticker.deltaMS;
+    if (gt.life <= 0) { ghostTrails.splice(i, 1); continue; }
+    const frac = gt.life / gt.maxLife;        // 1→0
+    const n = gt.pts.length >> 1;
+    const start = Math.floor((1 - frac) * (n - 1)) * 2;
+    drawTrail(g, gt.pts, start, gt.col, gt.w, frac * gt.alpha);
+  }
+}
+
+// --- Fogonazo del cañón ---
+function spawnMuzzleFlash(x, y, angle, col, btype, followPlayer) {
+  const mult = btype === 'heavy' ? 1.8 : btype === 'laser' ? 1.2 : btype === 'enemy' ? 0.9 : 1;
+  const f = {
+    x, y, angle, col,
+    size: MUZZLE_FLASH_SIZE * mult,
+    life: MUZZLE_FLASH_MS, maxLife: MUZZLE_FLASH_MS,
+    // 2–3 púas aleatorias alrededor de la dirección de disparo: [desvío, largo relativo]
+    spikes: [(Math.random()-0.5)*1.4, 0.6+Math.random()*0.6,
+             (Math.random()-0.5)*1.4, 0.6+Math.random()*0.6,
+             (Math.random()-0.5)*2.2, 0.4+Math.random()*0.4],
+    follow: false, ox: 0, oy: 0,
+  };
+  // El fogonazo del jugador se mueve con la nave durante su breve vida
+  if (followPlayer && player && player.alive) {
+    f.follow = true; f.ox = x - player.x; f.oy = y - player.y;
+  }
+  muzzleFlashes.push(f);
+}
+
+function updateMuzzleFlashes() {
+  const g = muzzleGfx;
+  g.clear();
+  for (let i = muzzleFlashes.length - 1; i >= 0; i--) {
+    const f = muzzleFlashes[i];
+    f.life -= app.ticker.deltaMS;
+    if (f.life <= 0) { muzzleFlashes.splice(i, 1); continue; }
+    const t = f.life / f.maxLife;             // 1→0
+    let x = f.x, y = f.y;
+    if (f.follow && player && player.alive) { x = player.x + f.ox; y = player.y + f.oy; }
+    const c = Math.cos(f.angle), s = Math.sin(f.angle);
+    const L = f.size * (0.7 + 0.5 * t);
+    const W = f.size * 0.38 * t;
+    // Cono de llama en la dirección del disparo
+    g.lineStyle(0);
+    g.beginFill(f.col, 0.6 * t);
+    g.drawPolygon([x + c*L, y + s*L,  x - s*W, y + c*W,  x - c*W*0.6, y - s*W*0.6,  x + s*W, y - c*W]);
+    g.endFill();
+    // Núcleo blanco
+    g.beginFill(0xffffff, 0.9 * t);
+    g.drawCircle(x, y, f.size * 0.28 * (0.5 + t));
+    g.endFill();
+    // Púas
+    g.lineStyle(Math.max(0.6, f.size * 0.1), f.col, 0.75 * t);
+    for (let k = 0; k < f.spikes.length; k += 2) {
+      const a = f.angle + f.spikes[k], len = L * f.spikes[k + 1] * 1.3;
+      g.moveTo(x, y);
+      g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+    }
+  }
+}
+
+// --- Impactos: chispas lineales que rebotan + destello + anillo ---
+function spawnImpactFx(x, y, vx, vy, col, scale = 1) {
+  if (sparks.length < IMPACT_MAX_SPARKS) {
+    const back = Math.atan2(-vy, -vx);         // dirección de rebote
+    const n = Math.round(IMPACT_SPARK_COUNT * scale);
+    const spdMul = Math.sqrt(scale);
+    for (let i = 0; i < n; i++) {
+      const a = back + (Math.random() - 0.5) * 2.0;
+      const v = IMPACT_SPARK_SPEED * (0.5 + Math.random()) * spdMul;
+      const life = IMPACT_SPARK_MS * (0.6 + Math.random() * 0.7);
+      sparks.push({
+        x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, col,
+        w: (1 + Math.random() * 1.2) * Math.max(MS, 0.6),
+        life, maxLife: life,
+      });
+    }
+  }
+  impactRings.push({ x, y, col, r: IMPACT_RING_RADIUS * scale,
+                     life: IMPACT_RING_MS, maxLife: IMPACT_RING_MS });
+}
+
+function updateImpactFx(dt) {
+  const g = impactGfx;
+  g.clear();
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const p = sparks[i];
+    p.life -= app.ticker.deltaMS;
+    if (p.life <= 0) { sparks.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= 0.88; p.vy *= 0.88;
+    const t = p.life / p.maxLife;             // 1→0
+    // Longitud proporcional a la velocidad → se encogen al frenar
+    const tx = p.x - p.vx * 2.4, ty = p.y - p.vy * 2.4;
+    g.lineStyle(p.w * (0.5 + t), p.col, t);
+    g.moveTo(tx, ty); g.lineTo(p.x, p.y);
+    g.lineStyle(p.w * 0.45, 0xffffff, t * 0.8);
+    g.moveTo((tx + p.x) * 0.5, (ty + p.y) * 0.5); g.lineTo(p.x, p.y);
+  }
+  for (let i = impactRings.length - 1; i >= 0; i--) {
+    const r = impactRings[i];
+    r.life -= app.ticker.deltaMS;
+    if (r.life <= 0) { impactRings.splice(i, 1); continue; }
+    const t = 1 - r.life / r.maxLife;         // 0→1
+    const ease = 1 - (1 - t) * (1 - t);
+    // Destello central (solo el primer tercio de la vida)
+    if (t < 0.35) {
+      g.lineStyle(0);
+      g.beginFill(0xffffff, (1 - t / 0.35) * 0.75);
+      g.drawCircle(r.x, r.y, r.r * 0.45 * (1 - t));
+      g.endFill();
+    }
+    // Anillo expansivo
+    g.lineStyle(0.6 + 2 * (1 - t), r.col, (1 - t) * 0.8);
+    g.drawCircle(r.x, r.y, r.r * (0.3 + 0.7 * ease));
+  }
+}
+
+// --- Temblor de pantalla (trauma) ---
+let shakeTrauma = 0;
+function addShake(amount) {
+  if (SHAKE_INTENSITY <= 0) return;
+  shakeTrauma = Math.min(1, shakeTrauma + amount);
+}
+
+// Se llama justo después de updateCamera(): suma el offset del temblor a la cámara
+function applyScreenShake(dt) {
+  let ox = 0, oy = 0;
+  if (shakeTrauma > 0) {
+    const m = SHAKE_MAX_PX * SHAKE_INTENSITY * shakeTrauma * shakeTrauma;
+    ox = (Math.random() * 2 - 1) * m;
+    oy = (Math.random() * 2 - 1) * m;
+    shakeTrauma = Math.max(0, shakeTrauma - SHAKE_DECAY * dt / 60);  // dt en frames de 60 Hz
+  }
+  worldContainer.x = -cam.x + ox;
+  worldContainer.y = -cam.y + oy;
+}
+
+function resetScreenShake() {
+  shakeTrauma = 0;
+  worldContainer.x = -cam.x;
+  worldContainer.y = -cam.y;
+}
+
+// Vacía todos los efectos de disparo (nueva partida)
+function clearShotFx() {
+  ghostTrails.length = 0;
+  muzzleFlashes.length = 0;
+  sparks.length = 0;
+  impactRings.length = 0;
+  bulletTrailGfx.clear();
+  muzzleGfx.clear();
+  impactGfx.clear();
+  flares.length = 0;
+  shadowGfx.clear();
+  enemyTrailGfx.clear();
+  enemyGlowGfx.clear();
+  entityFlashGfx.clear();
+  resetScreenShake();
+}
+
+// ================================================================
+// PROFUNDIDAD Y BRILLO — glow/estelas/destellos de entidades, sombras, fondo estelar
+// ================================================================
+// Mismo patrón que los efectos de disparo: un Graphics compartido por capa, borrado y
+// redibujado cada frame. Orden de capas en worldContainer (ver setup()):
+//   rejilla → sombras paredes → sombras móviles → estelas enemigas → glow → estelas balas
+//   → [paredes, entidades] → destellos de impacto/muerte, fogonazos, chispas (arriba)
+const wallShadowGfx = new PIXI.Graphics();   // estática: se dibuja en setup()
+const shadowGfx     = new PIXI.Graphics();   // sombras de enemigos y jugador
+const enemyTrailGfx = new PIXI.Graphics();
+const enemyGlowGfx  = new PIXI.Graphics();
+const entityFlashGfx = new PIXI.Graphics();  // encima de los cuerpos
+enemyTrailGfx.blendMode  = PIXI.BLEND_MODES.ADD;
+enemyGlowGfx.blendMode   = PIXI.BLEND_MODES.ADD;
+entityFlashGfx.blendMode = PIXI.BLEND_MODES.ADD;
+const flares = [];
+
+// Variantes cuya escala la anima su propia IA cada frame (el "golpe" se multiplica encima)
+const AI_SCALED_VARIANTS = { enemy_spawner:true, enemy_blackhole:true };
+// Variantes con sombra rectangular (bloques que no rotan); el resto, sombra circular
+const BOX_SHADOW_VARIANTS = { enemy_basic:true, enemy_heavy:true, enemy_boss:true };
+
+function drawWallShadows() {
+  const g = wallShadowGfx;
+  g.clear();
+  g.beginFill(0x000000, SHADOW_ALPHA);
+  for (let i = 0; i < pool.length; i++) {
+    const e = pool[i];
+    if (e.type !== TYPE.WALL) continue;
+    g.drawRect(e.x - e.halfW + SHADOW_OFFSET, e.y - e.halfH + SHADOW_OFFSET * 1.3, e.w, e.h);
+  }
+  g.endFill();
+}
+
+function updateEntityFx(now) {
+  const sh = shadowGfx, tr = enemyTrailGfx, gl = enemyGlowGfx, fl = entityFlashGfx;
+  sh.clear(); tr.clear(); gl.clear(); fl.clear();
+  const pulseT = now / 300;
+  for (let i = 0; i < pool.length; i++) {
+    const e = pool[i];
+    if (!e.alive || !e.gfx) continue;
+    const isPlayer = e.type === TYPE.PLAYER;
+    if (e.type !== TYPE.ENEMY && !isPlayer) continue;
+    const isBH = e.variant === 'enemy_blackhole';
+    const col  = isPlayer ? COLOR.player : e.color;
+
+    // "Golpe" de escala al recibir daño
+    let k = 0;
+    if (e._hitT) {
+      k = 1 - (now - e._hitT) / ENEMY_HIT_FLASH_MS;
+      if (k <= 0) { k = 0; e._hitT = 0; if (!AI_SCALED_VARIANTS[e.variant]) e.gfx.scale.set(1); }
+    }
+    if (k > 0) {
+      const base = AI_SCALED_VARIANTS[e.variant] ? e.gfx.scale.x : 1;
+      e.gfx.scale.set(base * (1 + ENEMY_HIT_PUNCH * k));
+    }
+    const r = Math.max(e.halfW, e.halfH) * e.gfx.scale.x;
+
+    if (!isBH) {
+      // Sombra proyectada (da altura sobre la rejilla)
+      sh.beginFill(0x000000, SHADOW_ALPHA);
+      if (BOX_SHADOW_VARIANTS[e.variant]) {
+        const hw = e.halfW * e.gfx.scale.x, hh = e.halfH * e.gfx.scale.y;
+        sh.drawRect(e.x - hw + SHADOW_OFFSET, e.y - hh + SHADOW_OFFSET * 1.3, hw * 2, hh * 2);
+      } else {
+        sh.drawCircle(e.x + SHADOW_OFFSET, e.y + SHADOW_OFFSET * 1.3, r * 0.95);
+      }
+      sh.endFill();
+      // Halo pulsante
+      const pulse = 1 + 0.12 * Math.sin(pulseT + e.id);
+      gl.beginFill(col, ENEMY_GLOW_ALPHA * 0.55);
+      gl.drawCircle(e.x, e.y, r * ENEMY_GLOW_SCALE * pulse);
+      gl.endFill();
+      gl.beginFill(col, ENEMY_GLOW_ALPHA);
+      gl.drawCircle(e.x, e.y, r * 1.45 * pulse);
+      gl.endFill();
+    }
+
+    // Estela de movimiento (la serpiente ya es una cadena y el blackhole tiene su disco)
+    if (!isPlayer && !isBH && !e._isSerpentSeg) {
+      if (!e._mtrail) e._mtrail = [];
+      const t = e._mtrail;
+      t.push(e.x, e.y);
+      if (t.length > ENEMY_TRAIL_LEN * 2) t.splice(0, t.length - ENEMY_TRAIL_LEN * 2);
+      const spd = Math.sqrt(e.vx * e.vx + e.vy * e.vy);
+      if (spd > ENEMY_TRAIL_MIN_SPEED) {
+        const a = Math.min(1, (spd - ENEMY_TRAIL_MIN_SPEED) / 4);
+        drawTrail(tr, t, 0, col, r * 1.4, a, ENEMY_TRAIL_ALPHA, false);
+      }
+    }
+
+    // Aviso de disparo del hitter: línea de mira + carga, justo antes de disparar
+    if (e.variant === 'enemy_hitter' && player && player.alive) {
+      const tLeft = HITTER_SHOOT_INTERVAL_MS - (now - e.lastShot);
+      if (tLeft > 0 && tLeft < HITTER_TELEGRAPH_MS) {
+        const c = 1 - tLeft / HITTER_TELEGRAPH_MS;     // 0→1
+        const dx = player.x - e.x, dy = player.y - e.y, d = Math.hypot(dx, dy) || 1;
+        const len = Math.min(d, 220 * Math.max(MS, 0.6));
+        fl.lineStyle(Math.max(1, 2 * MS) * (0.5 + c), 0xff2244, 0.15 + 0.55 * c);
+        fl.moveTo(e.x, e.y);
+        fl.lineTo(e.x + dx / d * len, e.y + dy / d * len);
+        fl.lineStyle(0);
+        fl.beginFill(0xff4466, 0.25 + 0.5 * c);
+        fl.drawCircle(e.x, e.y, r * (1.9 - 0.8 * c));
+        fl.endFill();
+        fl.beginFill(0xffffff, 0.6 * c);
+        fl.drawCircle(e.x, e.y, r * 0.5 * c);
+        fl.endFill();
+      }
+    }
+
+    // Destello de impacto encima del cuerpo
+    if (k > 0) {
+      fl.beginFill(0xffffff, 0.7 * k);
+      fl.drawCircle(e.x, e.y, r * 1.1);
+      fl.endFill();
+      fl.beginFill(col, 0.45 * k);
+      fl.drawCircle(e.x, e.y, r * 1.9);
+      fl.endFill();
+    }
+  }
+
+  // Destellos de lente (muertes, misiles)
+  const scx = cam.x + W() * 0.5, scy = cam.y + H() * 0.5;
+  for (let i = flares.length - 1; i >= 0; i--) {
+    const f = flares[i];
+    f.life -= app.ticker.deltaMS;
+    if (f.life <= 0) { flares.splice(i, 1); continue; }
+    const t = f.life / f.maxLife;             // 1→0
+    const s = f.size, grow = 1 + (1 - t) * 0.6;
+    // Raya anamórfica horizontal (color + núcleo blanco)
+    fl.beginFill(f.col, 0.5 * t);
+    fl.drawEllipse(f.x, f.y, s * 6 * grow, s * 0.22 * t + 0.5);
+    fl.endFill();
+    fl.beginFill(0xffffff, 0.8 * t);
+    fl.drawEllipse(f.x, f.y, s * 3.5 * grow, s * 0.09 * t + 0.4);
+    fl.endFill();
+    // Raya vertical corta
+    fl.beginFill(f.col, 0.3 * t);
+    fl.drawEllipse(f.x, f.y, s * 0.15 * t + 0.4, s * 2.2 * grow);
+    fl.endFill();
+    // Núcleo + halo
+    fl.beginFill(0xffffff, 0.9 * t * t);
+    fl.drawCircle(f.x, f.y, s * 0.9 * t);
+    fl.endFill();
+    fl.beginFill(f.col, 0.25 * t);
+    fl.drawCircle(f.x, f.y, s * 2 * grow);
+    fl.endFill();
+    // Fantasmas de lente alineados con el centro de pantalla
+    const dx = scx - f.x, dy = scy - f.y;
+    for (let g = 0; g < LENS_GHOSTS.length; g++) {
+      const [pos, rr, aa] = LENS_GHOSTS[g];
+      fl.beginFill(f.col, aa * t);
+      fl.drawCircle(f.x + dx * pos, f.y + dy * pos, s * rr);
+      fl.endFill();
+    }
+  }
+}
+
+function spawnFlare(x, y, col, size) {
+  if (flares.length >= DEATH_FLARE_MAX) return;
+  flares.push({ x, y, col, size, life: DEATH_FLARE_MS, maxLife: DEATH_FLARE_MS });
+}
+
+function spawnDeathFlare(enemy) {
+  const base = Math.max(enemy.halfW, enemy.halfH);
+  const v = enemy.variant;
+  const mult = v === 'enemy_blackhole' ? 3 : v === 'enemy_spawner' || v === 'enemy_boss' ? 2 : 1.2;
+  const col = v === 'enemy_blackhole' ? 0xcc66ff : (ENEMY_COLOR[v] ?? enemy.color);
+  spawnFlare(enemy.x, enemy.y, col, base * mult);
+}
+
+// Las capas de destellos/chispas se suben al tope cada frame, porque las entidades
+// nuevas se añaden al final de worldContainer y las taparían
+function raiseTopFx() {
+  worldContainer.addChild(entityFlashGfx);
+  worldContainer.addChild(muzzleGfx);
+  worldContainer.addChild(impactGfx);
+}
+
+// --- Fondo estelar con parallax + viñeta ---
+// Las estrellas son sprites pequeños (no mosaicos a pantalla completa): solo se pintan
+// sus píxeles, así no se añade overdraw de pantalla completa en GPUs móviles. Cubren un
+// campo del tamaño de la pantalla y se recolocan con módulo según el parallax.
+function makeDotTexture(size, soft) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const h = size / 2;
+  const gr = ctx.createRadialGradient(h, h, 0, h, h, h);
+  gr.addColorStop(0, 'rgba(255,255,255,1)');
+  gr.addColorStop(soft, 'rgba(255,255,255,0.6)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = gr;
+  ctx.fillRect(0, 0, size, size);
+  const tex = PIXI.Texture.from(c);
+  tex.baseTexture.scaleMode = PIXI.SCALE_MODES.LINEAR;
+  return tex;
+}
+const starDotTex = makeDotTexture(16, 0.25);
+const nebulaTex  = makeDotTexture(128, 0.05);
+const STAR_TINTS   = [0xffffff, 0xffffff, 0xffffff, 0xaaccff, 0xffd8aa];
+const NEBULA_TINTS = [0x5a28a0, 0x1e46a0, 0x781e6e, 0x145a78];
+
+const starContainer = new PIXI.Container();
+app.stage.addChildAt(starContainer, 0);
+const starLayers = [];   // { cfg, cont, items:[{spr, x, y, r}] }
+function buildStarfield() {
+  for (const L of starLayers) L.cont.destroy({ children: true });
+  starLayers.length = 0;
+  const FW = app.screen.width, FH = app.screen.height;
+  const areaK = (FW * FH) / (STAR_TILE * STAR_TILE);   // densidad constante por píxel
+  for (const cfg of STAR_LAYERS) {
+    const cont = new PIXI.Container();
+    starContainer.addChild(cont);
+    const items = [];
+    if (cfg.nebula) {
+      for (let i = 0; i < NEBULA_COUNT; i++) {
+        const spr = new PIXI.Sprite(nebulaTex);
+        const r = (90 + Math.random() * 90) * Math.max(0.6, Math.min(FW, FH) / 800);
+        spr.anchor.set(0.5);
+        spr.scale.set((r * 2) / 128);
+        spr.tint = NEBULA_TINTS[i % NEBULA_TINTS.length];
+        spr.alpha = 0.16;
+        cont.addChild(spr);
+        items.push({ spr, x: Math.random() * FW, y: Math.random() * FH, r });
+      }
+    }
+    const n = Math.max(4, Math.round(cfg.count * areaK));
+    for (let i = 0; i < n; i++) {
+      const spr = new PIXI.Sprite(starDotTex);
+      const r = cfg.size * (0.6 + Math.random() * 0.8) * 1.6;
+      spr.anchor.set(0.5);
+      spr.scale.set((r * 2) / 16);
+      spr.tint = STAR_TINTS[Math.floor(Math.random() * STAR_TINTS.length)];
+      spr.alpha = cfg.alpha * (0.45 + Math.random() * 0.55);
+      cont.addChild(spr);
+      items.push({ spr, x: Math.random() * FW, y: Math.random() * FH, r });
+    }
+    starLayers.push({ cfg, cont, items });
+  }
+}
+buildStarfield();
+
+// Viñeta en CSS: la compone el navegador, sin coste de relleno en WebGL.
+// z-index 5: encima del canvas del juego, debajo del HUD (z-index ≥ 10).
+const vignetteEl = document.createElement('div');
+vignetteEl.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:5;' +
+  `background:radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,${VIGNETTE_ALPHA}) 100%);`;
+document.body.appendChild(vignetteEl);
+
+function resizeBackdrop() { buildStarfield(); }
+
+// Aviso de vida baja: borde rojo pulsante (CSS, como la viñeta)
+const lowHpEl = document.createElement('div');
+lowHpEl.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:6;opacity:0;' +
+  'background:radial-gradient(ellipse at center, rgba(255,0,40,0) 50%, rgba(255,0,40,0.55) 100%);';
+document.body.appendChild(lowHpEl);
+let lowHpShown = 0;
+function updateLowHpWarning(now) {
+  let o = 0;
+  if (player && player.alive && !gameOver) {
+    const f = Math.max(0, player.energy) / player.maxEnergy;
+    if (f < LOW_HP_WARN_FRAC) {
+      const k = 1 - f / LOW_HP_WARN_FRAC;              // 0→1 cuanto menos vida
+      o = (0.35 + 0.65 * k) * (0.55 + 0.45 * Math.sin(now / (180 - 80 * k)));
+    }
+  }
+  o = Math.round(o * 50) / 50;
+  if (o !== lowHpShown) { lowHpShown = o; lowHpEl.style.opacity = o; }
+}
+
+// Parallax: sigue a la cámara (móvil) y, suavizado, al jugador respecto al centro de
+// pantalla — así también hay profundidad en escritorio, donde la cámara no se mueve
+const backdropOfs = { x: 0, y: 0 };
+function updateBackdrop(now) {
+  let tx = 0, ty = 0;
+  if (gameStarted && player && player.alive) {
+    tx = (player.x - cam.x - W() * 0.5) * 0.25;
+    ty = (player.y - cam.y - H() * 0.5) * 0.25;
+  }
+  backdropOfs.x += (tx - backdropOfs.x) * 0.08;
+  backdropOfs.y += (ty - backdropOfs.y) * 0.08;
+  const px = cam.x + backdropOfs.x, py = cam.y + backdropOfs.y;
+  const FW = app.screen.width, FH = app.screen.height;
+  for (const L of starLayers) {
+    const ox = -px * L.cfg.parallax - now * L.cfg.drift;
+    const oy = -py * L.cfg.parallax - now * L.cfg.drift * 0.4;
+    for (const it of L.items) {
+      // Envolver con margen = radio, para que no "salten" al cruzar el borde
+      const ww = FW + it.r * 2, hh = FH + it.r * 2;
+      it.spr.x = (((it.x + ox) % ww) + ww) % ww - it.r;
+      it.spr.y = (((it.y + oy) % hh) + hh) % hh - it.r;
+    }
+  }
+  starLayers[starLayers.length - 1].cont.alpha = 0.85 + 0.15 * Math.sin(now / 700);  // titileo
 }
 
 // ================================================================
@@ -898,18 +1675,33 @@ function timerColor(s) {
   return "#ff4444";
 }
 
+// El blackhole de la fase 6 se desvanece al entrar en la 7 (sin explosión ni puntos):
+// la fase 7 empieza con un respiro en vez de con un pozo de gravedad heredado
+function retireBlackholes() {
+  for (const e of pool) {
+    if (!e.alive || e.variant !== 'enemy_blackhole') continue;
+    spawnFragments(e.x, e.y, 0, 0, 0xcc00ff, 40);
+    spawnSpawnerPulse(e.x, e.y);
+    e.alive = false;
+  }
+}
+
 function startPhase(n, now) {
   currentPhase   = n;
   phaseStartTime = now;
   phaseActive    = true;
   if (n === 7) {
+    retireBlackholes();
+    phase7StartAt = now;
+    // Powerup garantizado para el respiro previo a la fase 7 (solo móvil, como todos)
+    if (isMobileControlsActive && player && player.alive) spawnPowerup();
     phase7Started = false; phase7Count = 0; phase7NextSpawn = 0; phase7Wave = 0;
     wavesSinceBlackholeDeath = BLACKHOLE_RESPAWN_WAVES + 1;
     s_bhMissingFrom = null; s_lastBHCheck = null; s_lastSerpentSpawn = null;
   }
   const config = PHASE_ADD_ENEMIES[n] ?? {};
   for (const [variant, count] of Object.entries(config)) {
-    for (let i = 0; i < count; i++) spawnEnemy(variant);
+    for (let i = 0; i < count; i++) spawnEnemy(variant, undefined, undefined, 'queue');
   }
   elPhaseLabel.textContent = "FASE " + n + " / " + TOTAL_PHASES;
 }
@@ -942,7 +1734,7 @@ function phaseUpdate(now) {
   // Auto-advance phases 1-6 if all enemies cleared
   if (currentPhase >= 1 && currentPhase <= 6 && phaseActive) {
     const liveEnemies = pool.filter(e => e.alive && e.type === TYPE.ENEMY).length;
-    if (liveEnemies === 0 && remaining > 0) {
+    if (liveEnemies === 0 && spawnQueue.length === 0 && remaining > 0) {
       startPhase(currentPhase + 1, now);
     }
   }
@@ -953,13 +1745,18 @@ function phaseUpdate(now) {
 //          blackhole si no hay ninguno en 30 s
 //          serpent cada 10 s, máximo 5 simultáneas
 // ================================================================
-const PHASE7_SPAWNER_COUNT    = 6;     // spawners por oleada
+const PHASE7_SPAWNER_COUNT    = 6;     // spawners por oleada (máximo; crece desde PHASE7_SPAWNERS_START)
+const PHASE7_SPAWNERS_START   = 2;     // primera oleada de spawners; +1 por ronda
+const PHASE7_HITTERS_START    = 3;     // primera oleada de hitters; +1 por ronda
+const PHASE7_MAX_HITTERS_ALIVE = 6;    // hitters vivos a la vez al empezar (sus balas eran la 1ª causa de muerte)…
+const PHASE7_MAX_HITTERS_CAP   = 10;   // …y sube +1 cada PHASE7_HITTER_CAP_GROWTH_MS hasta este máximo
+const PHASE7_HITTER_CAP_GROWTH_MS = 45000;
 const PHASE7_SPAWNER_INTERVAL = 800;   // ms entre cada spawner
-const PHASE7_HITTERS_PER_WAVE = 10;   // hitters por oleada
+const PHASE7_HITTERS_PER_WAVE = 10;   // hitters por oleada (máximo)
 const PHASE7_HITTER_INTERVAL  = 400;  // ms entre cada hitter
-const PHASE7_BH_TIMEOUT_MS    = 30000; // si no hay BH en este tiempo → spawn uno
+const PHASE7_BH_TIMEOUT_MS    = 45000; // si no hay BH en este tiempo → spawn uno
 const PHASE7_SERPENT_INTERVAL = 10000; // ms entre spawns de serpient
-const PHASE7_SERPENT_MAX      = 5;    // máximo de serpientes simultáneas
+const PHASE7_SERPENT_MAX      = 3;    // máximo de serpientes simultáneas (empieza en 1, +1 cada 2 rondas)
 const PHASE7_MAX_LIVE_MASS    = 400;  // pausa el spawn periódico si la masa viva supera esto
                                        // ojo: un solo blackhole ya cuenta 150 de masa (ENERGY.enemy_blackhole)
 
@@ -995,11 +1792,21 @@ function phase7Update(now) {
   }
 
   // ── Spawn periódico de la oleada actual (pausado si hay demasiada masa viva) ──
-  if (now >= phase7NextSpawn && getTotalEnemyMass() < PHASE7_MAX_LIVE_MASS) {
+  // También espera si se ha alcanzado el tope global: así la oleada no "avanza" en vacío
+  if (now >= phase7NextSpawn && getTotalEnemyMass() < PHASE7_MAX_LIVE_MASS * enemyCap() / ENEMY_MAX_ALIVE && enemyLoad() < enemyCap()) {
     const type = phase7WaveType();
-    const limit = type === 0 ? PHASE7_SPAWNER_COUNT : PHASE7_HITTERS_PER_WAVE;
+    // Oleadas progresivas: cada ronda (spawners + hitters) añade uno más de cada tipo
+    const round = Math.floor(phase7Wave / 2);
+    const limit = type === 0 ? Math.min(PHASE7_SPAWNER_COUNT, PHASE7_SPAWNERS_START + round)
+                             : Math.min(PHASE7_HITTERS_PER_WAVE, PHASE7_HITTERS_START + round);
+    const hittersAlive = type === 1 ? pool.filter(e => e.alive && e.variant === 'enemy_hitter').length : 0;
 
-    if (phase7Count < limit) {
+    const hitterCap = Math.min(PHASE7_MAX_HITTERS_CAP,
+      PHASE7_MAX_HITTERS_ALIVE + Math.floor((now - phase7StartAt) / PHASE7_HITTER_CAP_GROWTH_MS));
+    if (type === 1 && phase7Count < limit && hittersAlive >= hitterCap) {
+      // Demasiados hitters vivos: esperar antes de traer más
+      phase7NextSpawn = now + PHASE7_HITTER_INTERVAL;
+    } else if (phase7Count < limit) {
       const sw = WW(), sh = WH();
       if (type === 0) {
         // SPAWNERS — distribuidos entre las 4 esquinas
@@ -1052,7 +1859,8 @@ function phase7Update(now) {
   if (!s_lastSerpentSpawn) s_lastSerpentSpawn = now;
   if (now - s_lastSerpentSpawn >= PHASE7_SERPENT_INTERVAL) {
     const liveSerpents = serpents.filter(s => s.segs.length > 0).length;
-    if (liveSerpents < PHASE7_SERPENT_MAX) {
+    const serpentMax = Math.min(PHASE7_SERPENT_MAX, 1 + Math.floor(phase7Wave / 4));
+    if (liveSerpents < serpentMax && enemyLoad() + SERPENT_CAP_WEIGHT <= enemyCap()) {
       s_lastSerpentSpawn = now;
       const sw = WW(), sh = WH();
       spawnSerpent(Math.random() * sw, Math.random() * sh);
@@ -1291,7 +2099,7 @@ function enemyAI(now) {
           const dist  = 40 + Math.random() * 25;
           const sx = Math.max(30, Math.min(WW()-30, e.x + Math.cos(angle) * dist));
           const sy = Math.max(30, Math.min(WH()-30, e.y + Math.sin(angle) * dist));
-          spawnEnemy(SPAWNER_SPAWN_VARIANT, sx, sy);
+          spawnEnemy(SPAWNER_SPAWN_VARIANT, sx, sy, 'drop');
         }, 150);
       }
 
@@ -1429,7 +2237,11 @@ function enemyAI(now) {
     if (e.variant === 'enemy_hitter') {
       // Sin esto se queda plantado disparando desde su punto de spawn para siempre
       // (el retroceso del disparo incluso lo aleja). Tras un rato, se acerca despacio.
-      if (!e._spawnTime) e._spawnTime = now;
+      if (!e._spawnTime) {
+        e._spawnTime = now;
+        // Primer disparo tras HITTER_FIRST_SHOT_MS (con su aviso), no nada más aparecer
+        e.lastShot = now - HITTER_SHOOT_INTERVAL_MS + HITTER_FIRST_SHOT_MS;
+      }
       if (now - e._spawnTime >= HITTER_DRIFT_DELAY_MS) {
         const ddx = player.x - e.x, ddy = player.y - e.y;
         const ddist = Math.sqrt(ddx*ddx + ddy*ddy) || 1;
@@ -1800,9 +2612,11 @@ function updateMissiles(dt, now) {
       if (dx>mR+e.halfW || dy>mR+e.halfH) continue;
       // Hit!
       spawnFragments(m.x, m.y, m.vx*2, m.vy*2, MISSILE_COLOR, 22);
+      spawnImpactFx(m.x, m.y, m.vx, m.vy, MISSILE_COLOR, 1.8);
+      addShake(SHAKE_MISSILE_HIT);
       spawnSpawnerPulse(m.x, m.y);
       if (e.type===TYPE.ENEMY) {
-        e.energy-=m.currentDamage; showEnergyBar(e,now);
+        e.energy-=m.currentDamage; showEnergyBar(e,now); e._hitT=now;
         if (e.energy<=0){e.alive=false;onEnemyDeath(e, true);}
         const spd=Math.sqrt(m.vx*m.vx+m.vy*m.vy)||1;
         e.vx+=(m.vx/spd)*7*e.invMass; e.vy+=(m.vy/spd)*7*e.invMass;
@@ -1965,7 +2779,9 @@ function syncGraphics() {
     const e = pool[i];
     if (!e.gfx) continue;
     e.gfx.x = e.x; e.gfx.y = e.y;
-    if (e.type === TYPE.PLAYER) {
+    if (e.type === TYPE.BULLET) {
+      e.gfx.rotation = Math.atan2(e.vy, e.vx);
+    } else if (e.type === TYPE.PLAYER) {
       const spd = Math.sqrt(e.vx*e.vx + e.vy*e.vy);
       if (spd > 0.3) e.gfx.rotation = Math.atan2(e.vy, e.vx) - Math.PI * 0.5;
     }
@@ -2063,7 +2879,7 @@ const MISSILE_CADENCE   = [5000, 4000, 3000, 2000, 1500, 1000, 500, 200]; // ms 
 // Cada nivel de un powerup dura POWERUP_LEVEL_DURATION_MS sin refrescarse; al agotarse
 // baja un nivel (y ese nivel arranca su propia cuenta atrás) — así hay que seguir
 // buscando powerups activamente en vez de acumular buffs para siempre.
-const POWERUP_LEVEL_DURATION_MS = 20000;
+const POWERUP_LEVEL_DURATION_MS = 35000;  // solo corre con presión (ver POWERUP_DECAY_MIN_PRESSURE)
 const POWERUP_LEVEL_BLINK_MS    = 4000; // parpadea en el HUD justo antes de bajar de nivel
 let shieldLevelExpiresAt  = 0;
 let missileLevelExpiresAt = 0;
@@ -2080,27 +2896,111 @@ const POWERUP_LABELS = { S: 'ESCUDO', M: 'MISILES', L: 'LÁSER', F: 'POTENCIA', 
 const POWERUP_PICKUP_RADIUS = 35;
 const POWERUP_GROWTH_RATE = 0.5;      // ritmo original: cada powerup exige ×1.5 kills que el anterior
 const POWERUP_GAP_FREEZE_AFTER = 5;  // a partir del 5º powerup, el hueco deja de crecer y se queda fijo (antes: 10 → tope de 210 kills, demasiado poco frecuente)
-const POWERUP_SPAWN_WEIGHTS = { S: 1, M: 1, L: 1, F: 1, H: 2 }; // Vida cae más a menudo que el resto
+const POWERUP_SPAWN_WEIGHTS = { S: 1, M: 1, L: 1, F: 1, H: 1 }; // multiplicadores base; el director ajusta según la partida
 const POWERUP_MAX_ON_FIELD = 10; // tope de powerups vivos en el mapa a la vez
-const POWERUP_LIFETIME_MS = 20000; // caducan si no se recogen — hay que ir a buscarlos
+const POWERUP_LIFETIME_MS = 30000; // caducan si no se recogen — hay que ir a buscarlos
 const POWERUP_BLINK_MS = 2500;     // durante los últimos ms de vida, parpadean como aviso
 
-function pickPowerupType() {
-  const total = POWERUP_TYPES.reduce((sum, t) => sum + (POWERUP_SPAWN_WEIGHTS[t] ?? 1), 0);
-  let r = Math.random() * total;
-  for (const t of POWERUP_TYPES) {
-    r -= POWERUP_SPAWN_WEIGHTS[t] ?? 1;
-    if (r <= 0) return t;
+// --- Director: presión de la partida (0..1), recalculada cada frame ---
+let gamePressure = 0;
+const pressureInfo = { nearEnemies: 0, nearBullets: 0, hpMissing: 0, alive: 0, hitters: 0 };
+function updatePressure() {
+  if (!player || !player.alive) { gamePressure = 0; return; }
+  const R2 = PRESSURE_ENEMY_RADIUS * PRESSURE_ENEMY_RADIUS;
+  const B2 = PRESSURE_BULLET_RADIUS * PRESSURE_BULLET_RADIUS;
+  let near = 0, bullets = 0, alive = 0, hitters = 0;
+  for (let i = 0; i < pool.length; i++) {
+    const e = pool[i];
+    if (!e.alive) continue;
+    if (e.type === TYPE.ENEMY) {
+      alive++;
+      if (e.variant === 'enemy_hitter') hitters++;
+      const dx = e.x - player.x, dy = e.y - player.y;
+      if (dx*dx + dy*dy < R2) near++;
+    } else if (e.type === TYPE.BULLET && e.isEnemyBullet) {
+      const dx = e.x - player.x, dy = e.y - player.y;
+      if (dx*dx + dy*dy < B2) bullets++;
+    }
   }
-  return POWERUP_TYPES[POWERUP_TYPES.length - 1];
+  const hpMissing = 1 - Math.max(0, player.energy) / player.maxEnergy;
+  pressureInfo.nearEnemies = near; pressureInfo.nearBullets = bullets;
+  pressureInfo.hpMissing = hpMissing; pressureInfo.alive = alive; pressureInfo.hitters = hitters;
+  gamePressure = Math.min(1,
+    PRESSURE_W.near    * Math.min(1, near / PRESSURE_ENEMY_FULL) +
+    PRESSURE_W.bullets * Math.min(1, bullets / PRESSURE_BULLET_FULL) +
+    PRESSURE_W.hp      * hpMissing +
+    PRESSURE_W.crowd   * Math.min(1, alive / ENEMY_MAX_ALIVE));
 }
 
-function spawnPowerup(spawnX, spawnY) {
-  const type = pickPowerupType();
-  const col = POWERUP_COLORS[type];
+// Tipo de powerup según lo que el jugador necesita ahora mismo
+function pickPowerupType() {
+  const pi = pressureInfo;
+  const w = {};
+  // VIDA: solo si falta vida, y más cuanto más falta
+  w.H = (1 - pi.hpMissing) >= POWERUP_H_MAX_HP_FRAC ? 0 : 1 + 6 * pi.hpMissing;
+  // ESCUDO: más con balas cerca o muchos hitters; menos si el escudo ya está casi lleno
+  w.S = 1 + 2 * Math.min(1, pi.nearBullets / PRESSURE_BULLET_FULL) + (pi.hitters >= 3 ? 0.5 : 0);
+  if (shieldLevel > 0 && mobileShieldEnergy >= mobileShieldMaxEnergy * 0.8) w.S *= 0.5;
+  // ARMAS: más cuanto más enemigos vivos
+  const crowd = Math.min(1, pi.alive / POWERUP_CROWD_FULL);
+  w.F = w.M = w.L = 1 + 1.5 * crowd;
+  // Favorecer tipos ya activos para que los niveles lleguen a subir
+  if (shieldLevel  > 0) w.S += POWERUP_STACK_BONUS;
+  if (missileLevel > 0) w.M += POWERUP_STACK_BONUS;
+  if (laserLevel   > 0) w.L += POWERUP_STACK_BONUS;
+  if (weaponSpread > 0) w.F += POWERUP_STACK_BONUS;
+  // Un tipo ya al máximo no cae: sería un powerup inútil
+  if (shieldLevel  >= 7) w.S = 0;
+  if (missileLevel >= 7) w.M = 0;
+  if (laserLevel   >= 7) w.L = 0;
+  if (weaponSpread >= 7) w.F = 0;
+  let total = 0;
+  for (const t of POWERUP_TYPES) { w[t] = (w[t] ?? 0) * (POWERUP_SPAWN_WEIGHTS[t] ?? 1); total += w[t]; }
+  let r = Math.random() * total;
+  for (const t of POWERUP_TYPES) {
+    r -= w[t];
+    if (r <= 0 && w[t] > 0) return t;
+  }
+  return 'F';
+}
 
-  // Use provided position (dead enemy location)
-  const px = spawnX, py = spawnY;
+// Punto libre (fuera de paredes) a distancia [dmin,dmax] del jugador
+function pickSpotNearPlayer(dmin, dmax) {
+  const m = 60;
+  for (let tries = 0; tries < 10; tries++) {
+    const a = Math.random() * Math.PI * 2, d = dmin + Math.random() * (dmax - dmin);
+    const x = Math.max(m, Math.min(WW() - m, player.x + Math.cos(a) * d));
+    const y = Math.max(m, Math.min(WH() - m, player.y + Math.sin(a) * d));
+    let blocked = false;
+    for (let i = 0; i < pool.length && !blocked; i++) {
+      const w = pool[i];
+      if (w.type !== TYPE.WALL) continue;
+      blocked = Math.abs(x - w.x) < w.halfW + 20 && Math.abs(y - w.y) < w.halfH + 20;
+    }
+    if (!blocked) return { x, y };
+  }
+  return { x: player.x, y: player.y };
+}
+
+// spawnX/spawnY: posición del enemigo muerto (o undefined para drops del director).
+// forcedType: tipo fijo (VIDA de rescate); si no, lo elige el director.
+let lastPowerupSpawnAt = 0;   // cualquier drop reinicia el reloj del drop por tiempo
+let lastHSpawnAt       = 0;
+function spawnPowerup(spawnX, spawnY, forcedType) {
+  const now = performance.now();
+  const type = forcedType ?? pickPowerupType();
+  const col = POWERUP_COLORS[type];
+  lastPowerupSpawnAt = now;
+  if (type === 'H') lastHSpawnAt = now;
+
+  // Con presión alta (o drop del director) aparece cerca del jugador, donde se puede
+  // recoger; en calma, donde murió el enemigo o a media distancia para ir a buscarlo
+  let px = spawnX, py = spawnY;
+  if (player && player.alive && (px === undefined || gamePressure >= POWERUP_NEAR_PRESSURE)) {
+    const range = gamePressure >= POWERUP_NEAR_PRESSURE || forcedType ? POWERUP_NEAR_DIST : POWERUP_FAR_DIST;
+    const spot = pickSpotNearPlayer(range[0], range[1]);
+    px = spot.x; py = spot.y;
+  }
 
   // Create visual: glowing circle + letter
   const container = new PIXI.Container();
@@ -2181,12 +3081,39 @@ function applyPowerup(type) {
     weaponSpread = Math.min(7, weaponSpread + 1);
     spreadLevelExpiresAt = now + POWERUP_LEVEL_DURATION_MS;
   } else if (type === 'H') {
-    // Health: fully restore player HP
+    // Health: fully restore player HP. Con la vida ya (casi) llena no se desperdicia:
+    // sube la vida máxima hasta PLAYER_MAX_HP_CAP.
     if (player && player.alive) {
+      let label;
+      if (player.energy >= player.maxEnergy * 0.95 && player.maxEnergy < PLAYER_MAX_HP_CAP) {
+        player.maxEnergy = Math.min(PLAYER_MAX_HP_CAP, player.maxEnergy + H_OVERHEAL_MAXHP);
+        label = 'VIDA MÁX ' + player.maxEnergy;
+      }
       player.energy = player.maxEnergy;
       playerHPBarExpiry = now + 3000;
+      return label;
     }
   }
+}
+
+// Separación mínima entre drops: menor con presión, mayor cuanto más poder acumulado
+function powerupInterval() {
+  const base = POWERUP_TIME_INTERVAL_MS - (POWERUP_TIME_INTERVAL_MS - POWERUP_TIME_INTERVAL_MIN_MS) * gamePressure;
+  const levels = shieldLevel + missileLevel + laserLevel + weaponSpread;
+  return base * (1 + levels / POWERUP_POWER_SLOWDOWN);
+}
+
+// Drops por tiempo (más frecuentes con presión) y VIDA de rescate con vida baja
+function updatePowerupDirector(now) {
+  if (!player || !player.alive || currentPhase === 0) return;
+  if (powerups.length >= POWERUP_MAX_ON_FIELD) return;
+  const hpFrac = Math.max(0, player.energy) / player.maxEnergy;
+  if (hpFrac < POWERUP_RESCUE_HP_FRAC && now - lastHSpawnAt >= POWERUP_RESCUE_COOLDOWN_MS &&
+      !powerups.some(p => p.type === 'H')) {
+    spawnPowerup(undefined, undefined, 'H');
+    return;
+  }
+  if (now - lastPowerupSpawnAt >= powerupInterval()) spawnPowerup();
 }
 
 function updatePowerups(now) {
@@ -2212,10 +3139,21 @@ function updatePowerups(now) {
     p.ring.rotation = t * 1.5;
     p.glow.alpha = 0.6 + Math.sin(t * 2) * 0.3;
 
+    // Imán: cerca del jugador, el powerup se acerca solo
+    let dx = player.x - p.x, dy = player.y - p.y;
+    let pd = Math.sqrt(dx*dx + dy*dy);
+    if (pd < POWERUP_MAGNET_RADIUS && pd > 1) {
+      const step = (1 + POWERUP_MAGNET_SPEED * (1 - pd / POWERUP_MAGNET_RADIUS)) * (app.ticker.deltaMS / 16.6667);
+      const mv = Math.min(step, pd);
+      p.x += dx / pd * mv; p.y += dy / pd * mv;
+      p.gfx.x = p.x; p.gfx.y = p.y;
+      dx = player.x - p.x; dy = player.y - p.y;
+      pd = Math.sqrt(dx*dx + dy*dy);
+    }
+
     // Check pickup
-    const dx = player.x - p.x, dy = player.y - p.y;
-    if (Math.sqrt(dx*dx + dy*dy) < POWERUP_PICKUP_RADIUS) {
-      applyPowerup(p.type);
+    if (pd < POWERUP_PICKUP_RADIUS) {
+      const labelOverride = applyPowerup(p.type);
       // Pickup flash effect
       spawnFragments(p.x, p.y, 0, 0, POWERUP_COLORS[p.type], 20);
       // Show label popup with current level
@@ -2223,7 +3161,7 @@ function updatePowerups(now) {
                   p.type==='L' ? laserLevel : p.type==='F' ? weaponSpread : -1;
       // lvl already reflects the post-pickup level (applyPowerup ran above), so it's
       // already the correct 1-indexed multiplier — do not add another +1 here.
-      const lvlText = POWERUP_LABELS[p.type] + (lvl > 0 ? ' ×' + lvl : '');
+      const lvlText = labelOverride ?? (POWERUP_LABELS[p.type] + (lvl > 0 ? ' ×' + lvl : ''));
       spawnScorePopup(p.x, p.y, 0, lvlText);
       // Remove
       worldContainer.removeChild(p.gfx);
@@ -2246,6 +3184,15 @@ function updateMissileAuto(now) {
 // Cada nivel de S/M/L/F cuenta atrás por su cuenta (POWERUP_LEVEL_DURATION_MS);
 // al llegar a 0 baja un nivel y esa nueva cota arranca su propia cuenta atrás.
 function updatePowerupLevelDecay(now) {
+  // En calma los niveles no caducan: lo ganado al principio llega a cuando hace falta
+  if (gamePressure < POWERUP_DECAY_MIN_PRESSURE) {
+    const d = app.ticker.deltaMS;
+    if (shieldLevel  > 0) shieldLevelExpiresAt  += d;
+    if (missileLevel > 0) missileLevelExpiresAt += d;
+    if (laserLevel   > 0) laserLevelExpiresAt   += d;
+    if (weaponSpread > 0) spreadLevelExpiresAt  += d;
+    return;
+  }
   if (shieldLevel > 0 && now >= shieldLevelExpiresAt) {
     shieldLevel--;
     if (shieldLevel > 0) {
@@ -2312,6 +3259,9 @@ function clearPowerups() {
   powerups.length = 0;
   killCount = 0;
   nextPowerupAt = 5;
+  lastPowerupSpawnAt = performance.now();
+  lastHSpawnAt = 0;
+  gamePressure = 0;
   powerupDropCount = 0;
   lastPowerupGap = 0;
   missileAutoLast = 0;
@@ -2379,14 +3329,20 @@ function applyExplosionDamage(ex, ey, radius, damage, source) {
 
 function onEnemyDeath(enemy, playerKill = false) {
   const mass = ENERGY[enemy.variant] ?? 1;
+  spawnDeathFlare(enemy);
   if (playerKill) {
     score += mass * SCORE_MULTIPLIER;
     addScore(mass, enemy.x, enemy.y);
     enemyKillCount++;
+    // Temblor proporcional a la masa del enemigo (blackhole/spawner sacuden mucho más)
+    addShake(Math.min(SHAKE_KILL_MAX, SHAKE_KILL_BASE * Math.sqrt(mass)));
     // Powerup spawning (mobile only)
     if (isMobileControlsActive) {
       killCount++;
-      if (killCount >= nextPowerupAt && powerups.length < POWERUP_MAX_ON_FIELD) {
+      // Por kills, pero nunca más seguido que medio intervalo del director (evita la bola
+      // de nieve: más poder → más kills → más powerups)
+      if (killCount >= nextPowerupAt && powerups.length < POWERUP_MAX_ON_FIELD &&
+          performance.now() - lastPowerupSpawnAt >= powerupInterval() * 0.5) {
         spawnPowerup(enemy.x, enemy.y);
         powerupDropCount++;
         if (powerupDropCount < POWERUP_GAP_FREEZE_AFTER) {
@@ -2419,19 +3375,19 @@ function onEnemyDeath(enemy, playerKill = false) {
   } else if (enemy.variant === 'enemy_heavy') {
     spawnFragments(ex, ey, evx, evy, col, 50);
     spawnFragments(ex, ey, evx, evy, 0xffcc44, 20);
-    for (let i=0;i<2;i++) spawnEnemy('enemy_basic',ex+(Math.random()-.5)*20,ey+(Math.random()-.5)*20);
+    for (let i=0;i<HEAVY_DEATH_RELEASE;i++) spawnEnemy('enemy_basic',ex+(Math.random()-.5)*20,ey+(Math.random()-.5)*20,'drop');
   } else if (enemy.variant === 'enemy_boss') {
     spawnFragments(ex, ey, evx, evy, col, 70);
     spawnFragments(ex, ey, evx, evy, 0xff8800, 30);
     spawnFragments(ex, ey, evx, evy, 0xffffff, 15);
     spawnSpawnerPulse(ex, ey);
-    for (let i=0;i<4;i++) spawnEnemy('enemy_heavy',ex+(Math.random()-.5)*30,ey+(Math.random()-.5)*30);
+    for (let i=0;i<BOSS_DEATH_RELEASE;i++) spawnEnemy('enemy_heavy',ex+(Math.random()-.5)*30,ey+(Math.random()-.5)*30,'drop');
   } else if (enemy.variant === 'enemy_spawner') {
     spawnFragments(ex, ey, evx, evy, col, 60);
     spawnFragments(ex, ey, evx, evy, 0xdd44ff, 25);
     spawnSpawnerPulse(ex, ey);
     setTimeout(()=> spawnSpawnerPulse(ex, ey), 180);
-    for (let i=0;i<SPAWNER_DEATH_RELEASE;i++) spawnEnemy('enemy_heavy',ex+(Math.random()-.5)*50,ey+(Math.random()-.5)*50);
+    for (let i=0;i<SPAWNER_DEATH_RELEASE;i++) spawnEnemy('enemy_heavy',ex+(Math.random()-.5)*50,ey+(Math.random()-.5)*50,'drop');
   } else if (enemy.variant === 'enemy_follower') {
     spawnFragments(ex, ey, evx, evy, col, 40);
     spawnFragments(ex, ey, evx, evy, 0x44ffaa, 15);
@@ -2463,7 +3419,10 @@ function onCollision(a, b, ox, oy, now) {
     if (!bullet.alive) return;
 
     if (bullet.isEnemyBullet) {
-      if (other.type === TYPE.WALL) { bullet.alive = false; return; }
+      if (other.type === TYPE.WALL) {
+        spawnImpactFx(bullet.x, bullet.y, bullet.vx, bullet.vy, ENEMY_BULLET_COLOR, 0.6);
+        bullet.alive = false; return;
+      }
       if (other.type === TYPE.PLAYER) {
         // Shield blocks enemy bullets — deflect and destroy
         if (shieldActive) {
@@ -2474,6 +3433,7 @@ function onCollision(a, b, ox, oy, now) {
             if (mobileShieldEnergy <= 0) shieldActive = false;
           }
           spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, 0x88ffff, 8);
+          spawnImpactFx(bullet.x, bullet.y, bullet.vx, bullet.vy, 0x88ffff, 1);
           bullet.alive = false;
           return;
         }
@@ -2483,16 +3443,21 @@ function onCollision(a, b, ox, oy, now) {
           if (other.energy <= 0) other.alive = false;
           playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
           refreshShieldBar(now);
+          addShake(SHAKE_PLAYER_HIT);
+          other._hitT = now;
         }
         spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, 0xff4444);
+        spawnImpactFx(bullet.x, bullet.y, bullet.vx, bullet.vy, 0xff4444, 1.3);
         applyBulletImpulse(bullet, other);
         bullet.alive = false;
       }
       if (other.type === TYPE.ENEMY) {
         other.energy -= bullet.currentDamage;
         if (other.energy <= 0) { other.alive = false; onEnemyDeath(other, false); }  // bala enemiga — no puntúa
+        other._hitT = now;
         showEnergyBar(other, now);
         spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, ENEMY_COLOR[other.variant] ?? 0xff3333, 6);
+        spawnImpactFx(bullet.x, bullet.y, bullet.vx, bullet.vy, ENEMY_BULLET_COLOR, 0.8);
         applyBulletImpulse(bullet, other);
         bullet.alive = false;
       }
@@ -2504,6 +3469,7 @@ function onCollision(a, b, ox, oy, now) {
       if (other.isEnemyBullet) {
         // bala del jugador destruye bala enemiga
         spawnFragments(bullet.x, bullet.y, bullet.vx*0.3, bullet.vy*0.3, 0xffaa00, 5);
+        spawnImpactFx(bullet.x, bullet.y, bullet.vx, bullet.vy, 0xffaa00, 0.8);
         other.alive = false;
         bullet.alive = false;
       }
@@ -2512,13 +3478,16 @@ function onCollision(a, b, ox, oy, now) {
     }
     if (other.type === TYPE.WALL) {
       spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, 0x888888, 5);
+      spawnImpactFx(bullet.x, bullet.y, bullet.vx, bullet.vy, bullet.color, (IMPACT_SCALE[bullet._btype] ?? 1) * 0.7);
       bullet.alive = false; return;
     }
     if (other.type === TYPE.ENEMY) {
       other.energy -= bullet.currentDamage;
       if (other.energy <= 0) { other.alive = false; onEnemyDeath(other, true); }
+      other._hitT = now;
       showEnergyBar(other, now);
       spawnFragments(bullet.x, bullet.y, bullet.vx, bullet.vy, ENEMY_COLOR[other.variant] ?? 0xffffff);
+      spawnImpactFx(bullet.x, bullet.y, bullet.vx, bullet.vy, bullet.color, IMPACT_SCALE[bullet._btype] ?? 1);
       applyBulletImpulse(bullet, other);
       // Bullet hit activates drift for basic/heavy/boss
       if (other.variant === 'enemy_basic' || other.variant === 'enemy_heavy' || other.variant === 'enemy_boss') {
@@ -2549,6 +3518,8 @@ function onCollision(a, b, ox, oy, now) {
       } else {
         pl.energy -= ENEMY_DAMAGE[enemy.variant] ?? 1;
         if (pl.energy <= 0) pl.alive = false;
+        addShake(SHAKE_PLAYER_HIT);
+        pl._hitT = now;
         playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
         refreshShieldBar(now);
       }
@@ -2659,6 +3630,31 @@ function physicsStep(dt, now) {
       }
 
       // Núcleo: destrucción de otras entidades
+      if (dist < bh.halfW + Math.max(e.halfW, e.halfH) && e.type === TYPE.PLAYER) {
+        // Jugador en el núcleo: daño fuerte + expulsión (antes: absorción = muerte instantánea)
+        if (now - e.lastHit > HIT_CD_MS) {
+          e.lastHit = now;
+          e._hitT = now;
+          addShake(SHAKE_PLAYER_HIT);
+          if (shieldActive) {
+            if (isMobileControlsActive) {
+              mobileShieldEnergy = Math.max(0, mobileShieldEnergy - BLACKHOLE_CORE_DAMAGE * SHIELD_INCOMING_DAMAGE_MULT);
+              if (mobileShieldEnergy <= 0) shieldActive = false;
+            }
+            shieldBarExpiry = now + PLAYER_HP_BAR_DURATION;
+          } else {
+            e.energy -= BLACKHOLE_CORE_DAMAGE;
+            if (e.energy <= 0) e.alive = false;
+            playerHPBarExpiry = now + PLAYER_HP_BAR_DURATION;
+            refreshShieldBar(now);
+          }
+        }
+        const d = dist || 1;
+        e.vx = -(dx / d) * BLACKHOLE_EJECT_SPEED;
+        e.vy = -(dy / d) * BLACKHOLE_EJECT_SPEED;
+        spawnFragments(e.x, e.y, e.vx, e.vy, 0xcc66ff, 10);
+        continue;
+      }
       if (dist < bh.halfW + Math.max(e.halfW, e.halfH)) {
         // El blackhole absorbe la entidad — su masa infinita no se ve afectada en posición
         const absorbedMass = ENERGY[e.variant] ?? 1;
@@ -2670,11 +3666,7 @@ function physicsStep(dt, now) {
         if (!bh._visualSize) bh._visualSize = BLACKHOLE_SIZE;
         bh.w = bh.h = bh._targetSize;
         bh.halfW = bh.halfH = bh.w * 0.5;
-        if (e.type === TYPE.PLAYER) {
-          e.energy = 0; e.alive = false;
-        } else {
-              e.alive = false;  // absorbed — no player score
-        }
+        e.alive = false;  // absorbed — no player score
         // El blackhole no recibe impulso — masa infinita
         spawnFragments(e.x, e.y, 0, 0, e.color ?? 0xffffff, 8);
       }
@@ -2854,6 +3846,7 @@ function inputUpdate(now) {
       [-10, -5, 0, 5, 10, 175, 180, 185],         // modo 8: 5 frontales + 3 traseras
     ];
     const angles = spreadAngles[weaponSpread];
+    if (currentWeapon === "heavy") addShake(SHAKE_HEAVY_SHOT);
     for (const deg of angles) {
       const rad = deg * Math.PI / 180;
       const cos = Math.cos(rad), sin = Math.sin(rad);
@@ -3146,6 +4139,12 @@ function generateInteriorWalls(sw, sh) {
 function setup() {
   // Re-attach persistent gfx layers (safe to call multiple times)
   if (!worldContainer.children.includes(warpGridGfx))  worldContainer.addChildAt(warpGridGfx, 0);
+  // Capas bajo paredes y entidades, justo encima de la rejilla (en este orden)
+  [wallShadowGfx, shadowGfx, enemyTrailGfx, enemyGlowGfx, bulletTrailGfx].forEach((lg, i) => {
+    if (!worldContainer.children.includes(lg)) worldContainer.addChildAt(lg, i + 1);
+  });
+  // Destellos, fogonazos e impactos encima (raiseTopFx() los mantiene arriba cada frame)
+  raiseTopFx();
   if (!worldContainer.children.includes(aimLine))       worldContainer.addChild(aimLine);
   if (!worldContainer.children.includes(playerBarsGfx)) worldContainer.addChild(playerBarsGfx);
   if (!worldContainer.children.includes(shieldGfx))     worldContainer.addChild(shieldGfx);
@@ -3160,6 +4159,7 @@ function setup() {
   // Paredes interiores aleatorias
   const walls = generateInteriorWalls(sw, sh);
   for (const w of walls) spawnWall(w.x, w.y, w.w, w.h);
+  drawWallShadows();
 
   player = spawnPlayer();
 }
@@ -3211,6 +4211,7 @@ function updateAutoBeam(now) {
   if (now - autoBeamLastTick >= AUTOBEAM_TICK_MS) {
     autoBeamLastTick = now;
     autoBeamTarget.energy -= AUTOBEAM_DAMAGE;
+    autoBeamTarget._hitT = now;
     showEnergyBar(autoBeamTarget, now);
     spawnFragments(autoBeamTarget.x, autoBeamTarget.y, 0, 0, 0x44aaff, 4);
     if (autoBeamTarget.variant === 'enemy_basic' || autoBeamTarget.variant === 'enemy_heavy' || autoBeamTarget.variant === 'enemy_boss') {
@@ -3483,15 +4484,9 @@ function updateIntroAnimation(now) {
     else if (side===2) { sx=Math.random()*sw; sy=sh+30; vx=(Math.random()-.5)*2; vy=-(1+Math.random()*1.5); }
     else { sx=-30; sy=Math.random()*sh; vx=1+Math.random()*1.5; vy=(Math.random()-.5)*2; }
 
-    const g = new PIXI.Graphics();
-    // Draw simple enemy shape
-    g.beginFill(col, 0.75);
-    if (variant === 'enemy_follower') {
-      g.drawPolygon([ew/2,0, ew,eh/2, ew/2,eh, 0,eh/2]);
-    } else {
-      g.drawRect(0,0,ew,eh);
-    }
-    g.endFill();
+    // Mismo aspecto con volumen que en partida (entidad ligera solo para el dibujo)
+    const g = buildEnemyGfx({ variant, w:ew, h:eh, halfW:ew/2, halfH:eh/2, color:col });
+    g.alpha = 0.75;
     g.pivot.x = ew/2; g.pivot.y = eh/2;
     g.x = sx; g.y = sy;
     worldContainer.addChild(g);
@@ -3536,6 +4531,7 @@ app.ticker.add(() => {
   if (prevTime===null) { prevTime=now; return; }
   const dt = Math.min((now-prevTime)/16.6667, 3);
   prevTime = now;
+  updateBackdrop(now);
 
   if (!gameStarted) {
     updateIntroAnimation(now);
@@ -3555,20 +4551,29 @@ app.ticker.add(() => {
       mouse.y = player.y + aimVector.y * 400;
     }
     inputUpdate(now);
+    updatePressure();
+    processSpawnQueue(now);
     updateBulletFade();
     physicsStep(dt, now);
     updateSerpents(now);
     purge();
     syncGraphics();
+    updateBulletTrails();
+    updateEntityFx(now);
+    raiseTopFx();
     updateCamera();
+    applyScreenShake(dt);
     updateEnergyBars(now);
     updateFragments(dt);
+    updateImpactFx(dt);
     updateEnemyParticles(dt);
     updateBirthEffects();
     updateMissiles(dt, now);
     updateMissileExhaust(dt);
     updateMissileAuto(now);
     updatePowerups(now);
+    if (isMobileControlsActive) updatePowerupDirector(now);
+    updateLowHpWarning(now);
     // Mobile-only: on desktop, weaponSpread is driven directly by the 1/2/3 weapon
     // keys (see keydown handler) and never gets a spreadLevelExpiresAt from a powerup
     // pickup, so it stays 0 forever — the decay check would see `now >= 0` as always
@@ -3579,6 +4584,7 @@ app.ticker.add(() => {
     }
     updateLockReticles(now);
     updatePulses();
+    updateMuzzleFlashes();
     updateImpulseFlashes();
     spawnExhaust(now);
     updateExhaust(dt);
@@ -3594,8 +4600,11 @@ app.ticker.add(() => {
     if (player && (!player.alive || player.energy <= 0) && !gameOver) {
       player.alive = false;
       gameOver = true;
+      resetScreenShake();
+      updateLowHpWarning(now);
       // Remove player sprite immediately
       if (player.gfx) { worldContainer.removeChild(player.gfx); player.gfx.destroy(); player.gfx = null; }
+      updateEntityFx(now);  // redibuja sin el jugador: que no quede su sombra/halo congelado
       // If anything in here throws, the game must never get stuck on a dead player
       // with no way back to the menu — force the overlay open as a last resort.
       try {
@@ -3620,6 +4629,7 @@ app.ticker.add(() => {
 
 window.addEventListener("resize", () => {
   app.renderer.resize(window.innerWidth, window.innerHeight);
+  resizeBackdrop();
   resizePowerupArrowCanvas();
 });
 
@@ -3763,6 +4773,8 @@ function startGame() {
   shieldActive = false;
   shieldUsedMs = 0;
   clearPowerups();
+  clearShotFx();
+  spawnQueue.length = 0;
   updateKillHud();
   warpGridGfx.clear();
   sessionStartTime = performance.now();
